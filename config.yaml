@@ -1,0 +1,8 @@
+# MRDM v0.3 System Configuration
+target_wake: "08:30"
+sleep_need_hours: 7.0
+
+# 动力学参数
+lambda_d: 0.90      # 睡眠债衰减系数
+alpha_up: 0.98      # 习惯建立阻尼 (爬坡)
+alpha_down: 0.50    # 习惯破坏阻尼 (跌落)
