@@ -1,0 +1,32 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Test and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Streamlit and notebook artifacts
+.streamlit/
+.ipynb_checkpoints/
+
+# Project generated outputs
+data/
+reports/
+exports/
+
+# Project maintenance instructions
+AGENTS.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated backups
+data/backups/

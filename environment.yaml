@@ -1,0 +1,9 @@
+name: mrdm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pandas
+  - streamlit
+  - pyyaml
+  - altair
