@@ -7,3 +7,4 @@ dependencies:
   - streamlit
   - pyyaml
   - altair
+  - plotly

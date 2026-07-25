@@ -1,4 +1,4 @@
-# MRDM Console v0.1
+# MRDM Console v0.3-nightly
 
 MRDM (Minimal Rhythm Dynamics Model) is a minimal, long-running rhythm control system for a single subject (N=1). The repository currently contains a Python/Streamlit prototype that supports low-cost daily logging and rhythm tracking.
 
@@ -15,8 +15,8 @@ MRDM is not about micro-level prediction accuracy. It focuses on stability over 
 
 Daily data is grouped by a rhythm day anchored to `WakeTarget`.
 
-- Sleep sessions that start before `WakeTarget` belong to the current rhythm day.
-- Sleep sessions that start at or after `WakeTarget` belong to the next rhythm day.
+- Overnight sleep belongs to the wake date.
+- Same-day evening sleep belongs to the next rhythm day.
 - Multiple sleep sessions in one rhythm day are summed by duration.
 - `P` is based on the end time of the main sleep session in that rhythm day.
 
@@ -25,6 +25,8 @@ Daily data is grouped by a rhythm day anchored to `WakeTarget`.
 The Streamlit console lets you:
 
 - enter one daily record in under 10 seconds,
+- mark whether a sleep-aid medication was used,
+- open a test panel to temporarily override target wake time, sleep need, and dynamics parameters,
 - review and edit raw records,
 - delete mistakes and save a backup,
 - see derived `P`, `D`, `H`, and attractor status.
@@ -37,6 +39,20 @@ The Streamlit console lets you:
 
 The formal model is documented in [MRDM.md](MRDM.md).
 
+## Setup
+
+```bash
+conda env create -f environment.yaml
+conda activate mrdm
+```
+
+Or with mamba (recommended for faster dependency resolution):
+
+```bash
+mamba env create -f environment.yaml
+mamba activate mrdm
+```
+
 ## Run
 
 From the project root:
@@ -45,6 +61,10 @@ From the project root:
 bash start_mrdm.sh
 ```
 
+The app auto-initializes an empty `data/records.csv` on first launch.
+
+Edit `config.yaml` to set your target wake time and sleep need before starting.
+
 ## Files
 
 - `README.md`: this overview.
@@ -52,7 +72,7 @@ bash start_mrdm.sh
 - `MRDM.md`: model specification.
 - `ui/streamlit_app.py`: current UI.
 - `model/dynamics.py`: current state calculations.
-- `data/records.csv`: daily history.
+- `config.yaml`: user configuration.
 
 ## Deferred work
 
@@ -60,4 +80,4 @@ bash start_mrdm.sh
 - Control cost penalties
 - More detailed pharmacological modeling
 
-These ideas are valid, but their measurement cost or parameter uncertainty is too high for the minimal v0.1 control loop.
+These ideas are valid, but their measurement cost or parameter uncertainty is too high for the minimal v0.3-nightly control loop.
