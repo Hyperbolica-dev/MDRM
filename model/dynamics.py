@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 MAIN_SLEEP_THRESHOLD_HOURS = 3.0
+EVENING_SLEEP_THRESHOLD = datetime.strptime("18:00", "%H:%M").time()
 
 
 def parse_clock_time(time_str: str):
@@ -11,17 +12,17 @@ def parse_clock_time(time_str: str):
 
 
 def build_sleep_session(session_date: date, sleep_start_str: str, wake_end_str: str):
-    """Build a normalized sleep interval anchored to the entered sleep-start date.
+    """Build a normalized sleep interval anchored to the entered wake date.
 
-    The entered date is treated as the date the sleep session began. If the
-    wake time is earlier than the start time, the wake end is moved to the next
-    day to represent a session that crossed midnight.
+    The entered date is treated as the wake date. If the sleep start time is
+    later than the wake time, the sleep start is moved to the previous day to
+    represent a session that crossed midnight.
     """
     sleep_start = datetime.combine(session_date, parse_clock_time(sleep_start_str))
     wake_end = datetime.combine(session_date, parse_clock_time(wake_end_str))
 
-    if wake_end <= sleep_start:
-        wake_end += timedelta(days=1)
+    if sleep_start > wake_end:
+        sleep_start -= timedelta(days=1)
 
     return sleep_start, wake_end
 
@@ -31,16 +32,19 @@ def calculate_sleep_duration_hours(sleep_start: datetime, wake_end: datetime) ->
     return (wake_end - sleep_start).total_seconds() / 3600.0
 
 
-def assign_rhythm_day(sleep_start: datetime, wake_target_str: str) -> date:
-    """Assign a sleep session to its rhythm day using the target wake anchor.
+def assign_rhythm_day(sleep_start: datetime, wake_end: datetime, wake_target_str: str) -> date:
+    """Assign a sleep session to its rhythm day using wake-date anchoring.
 
-    Sleep that begins before WakeTarget belongs to the current rhythm day.
-    Sleep that begins at or after WakeTarget belongs to the next rhythm day.
+    Overnight sleep that crosses midnight belongs to the wake date.
+    Same-day evening sleep is pushed to the next rhythm day so it contributes
+    to the following day's energy budget.
     """
-    wake_target = parse_clock_time(wake_target_str)
-    if sleep_start.time() < wake_target:
-        return sleep_start.date()
-    return (sleep_start + timedelta(days=1)).date()
+    _ = wake_target_str
+    if wake_end.date() > sleep_start.date():
+        return wake_end.date()
+    if sleep_start.time() >= EVENING_SLEEP_THRESHOLD:
+        return wake_end.date() + timedelta(days=1)
+    return wake_end.date()
 
 
 def derive_session_frame(df, wake_target_str: str):
@@ -61,7 +65,7 @@ def derive_session_frame(df, wake_target_str: str):
         sleep_starts.append(sleep_start)
         wake_ends.append(wake_end)
         sleep_hours.append(calculate_sleep_duration_hours(sleep_start, wake_end))
-        rhythm_days.append(assign_rhythm_day(sleep_start, wake_target_str))
+        rhythm_days.append(assign_rhythm_day(sleep_start, wake_end, wake_target_str))
 
     derived["sleep_start_dt"] = sleep_starts
     derived["wake_end_dt"] = wake_ends
@@ -131,15 +135,21 @@ def build_daily_summary_frame(
     for rhythm_day in distinct_days:
         current_bucket = ordered[ordered["main_sleep_day"] == rhythm_day]
         total_sleep = float(current_bucket["sleep_hours"].sum())
-        main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
-        if not main_sleep_bucket.empty:
-            representative = main_sleep_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+        if total_sleep <= 0:
+            p_t = 0.0
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d)
+            h_t = alpha_down * h_prev
+            in_attr = check_attractor(p_t, d_t)
         else:
-            representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
-        p_t = calculate_phase(representative["wake_time"], wake_target_str)
-        d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d)
-        h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
-        in_attr = check_attractor(p_t, d_t)
+            main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
+            if not main_sleep_bucket.empty:
+                representative = main_sleep_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+            else:
+                representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+            p_t = calculate_phase(representative["wake_time"], wake_target_str)
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d)
+            h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
+            in_attr = check_attractor(p_t, d_t)
 
         summary_rows.append(
             {

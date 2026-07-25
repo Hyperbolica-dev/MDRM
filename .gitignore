@@ -23,6 +23,7 @@ exports/
 
 # Project maintenance instructions
 AGENTS.md
+.roo/
 
 # OS files
 .DS_Store

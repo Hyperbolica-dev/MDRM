@@ -2,7 +2,7 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
-## [Unreleased]
+## [v0.3-nightly] - 2026-07-25
 
 ### Added
 
@@ -10,13 +10,22 @@ All notable changes to MRDM are recorded here in a maintenance-friendly format.
 - Raw-data review and manual management section in the console UI.
 - Rhythm-day aggregation rule anchored to `WakeTarget`.
 - Short in-app explanation of the current P / D / H calculation principles.
+- Sleep-aid medication checkbox in the daily entry form.
+- Test panel for temporary overrides of target wake time, sleep need, and dynamics parameters.
+- Automatic daily backup creation on first launch, plus backup retention cleanup.
+- Primary state observer dashboard with current P, D, H, and attractor status.
+- P-D phase-space trajectory view with attractor zone highlighting and current-state emphasis.
+- Core trend charts for wake time, sleep debt, and habit strength with time-range controls.
+- CSV import validation with schema-version, required-column, and date-format checks.
 
 ### Changed
 
-- Sleep sessions are now grouped by rhythm day instead of being treated as a single natural-day sleep block.
+- Replaced matplotlib with Plotly for the P-D phase-space trajectory view and core trend charts. Adds interactive hover tooltips showing date, P, D, H, wake time, sleep hours, momentum, disturbance, and attractor status per data point. Removes matplotlib as a runtime dependency.
 - Daily summaries are computed from aggregated sleep sessions so naps and split sleep are handled consistently.
 - The Streamlit UI can edit or delete raw records and creates a backup before saving changes.
-- Rhythm-day attribution is now based on sleep start time relative to `WakeTarget`: sessions that start before the target stay in the current day, and sessions that start at or after the target roll into the next day.
+- Rhythm-day attribution is now anchored to the wake date for overnight sleep, while same-day evening sleep rolls into the next rhythm day.
+- The console now behaves as a rhythm state observer landing page instead of a raw log viewer.
+- The rectangular attractor overlay is treated as a temporary heuristic for future density-based analysis.
 
 ### Fixed
 
