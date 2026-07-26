@@ -1,3 +1,4 @@
+import math
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -83,6 +84,8 @@ def calculate_daily_state(
     lambda_d: float,
     alpha_up: float,
     alpha_down: float,
+    recovery_max_hours: float = 3.0,
+    recovery_saturation_tau: float = 2.0,
 ):
     """Recalculate the latest rhythm-day state from all stored sleep sessions.
 
@@ -97,6 +100,8 @@ def calculate_daily_state(
         lambda_d,
         alpha_up,
         alpha_down,
+        recovery_max_hours,
+        recovery_saturation_tau,
     )
 
     if daily_summary.empty:
@@ -120,6 +125,8 @@ def build_daily_summary_frame(
     lambda_d: float,
     alpha_up: float,
     alpha_down: float,
+    recovery_max_hours: float = 3.0,
+    recovery_saturation_tau: float = 2.0,
 ):
     """Build one summary row per rhythm day from a derived session frame."""
     if derived.empty:
@@ -137,7 +144,7 @@ def build_daily_summary_frame(
         total_sleep = float(current_bucket["sleep_hours"].sum())
         if total_sleep <= 0:
             p_t = 0.0
-            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d)
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_max_hours, recovery_saturation_tau)
             h_t = alpha_down * h_prev
             in_attr = check_attractor(p_t, d_t)
         else:
@@ -147,7 +154,7 @@ def build_daily_summary_frame(
             else:
                 representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
             p_t = calculate_phase(representative["wake_time"], wake_target_str)
-            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d)
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_max_hours, recovery_saturation_tau)
             h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
             in_attr = check_attractor(p_t, d_t)
 
@@ -182,9 +189,19 @@ def calculate_phase(wake_actual_str: str, wake_target_str: str) -> float:
         
     return diff
 
-def calculate_sleep_debt(d_prev: float, sleep_actual: float, sleep_need: float, lambda_d: float) -> float:
-    """计算睡眠债 D_t"""
-    return lambda_d * d_prev + (sleep_need - sleep_actual)
+def calculate_sleep_debt(
+    d_prev: float,
+    sleep_actual: float,
+    sleep_need: float,
+    lambda_d: float,
+    recovery_max_hours: float = 3.0,
+    recovery_saturation_tau: float = 2.0,
+) -> float:
+    excess = sleep_actual - sleep_need
+    if excess <= 0:
+        return max(0, lambda_d * d_prev - excess)
+    saturated_recovery = recovery_max_hours * (1 - math.exp(-excess / recovery_saturation_tau))
+    return max(0, lambda_d * d_prev - saturated_recovery)
 
 def calculate_habit(h_prev: float, p_current: float, alpha_up: float, alpha_down: float) -> float:
     """计算行为惯性 H_t (非对称演化)"""

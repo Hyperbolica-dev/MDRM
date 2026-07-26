@@ -6,3 +6,5 @@ sleep_need_hours: 7.0
 lambda_d: 0.90      # 睡眠债衰减系数
 alpha_up: 0.98      # 习惯建立阻尼 (爬坡)
 alpha_down: 0.50    # 习惯破坏阻尼 (跌落)
+recovery_max_hours: 3.0   # 每日最大睡眠债恢复量 (小时)
+recovery_saturation_tau: 2.0  # 恢复饱和速率 (oversleep小时达到~63%最大恢复)

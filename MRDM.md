@@ -77,7 +77,21 @@ $$
 D_t = \lambda D_{t-1} + (SleepNeed - SleepActual)
 $$
 
-其中建议 $\lambda = 0.9$。
+其中建议 $\lambda = 0.9$。取值范围：$0 \le D \le +\infty$（睡眠债不会为负）。
+
+当 oversleep 时（$SleepActual > SleepNeed$），恢复遵循饱和曲线：
+
+$$
+\Delta D_{recovery} = -R_{max} \cdot \left(1 - e^{-(SleepActual - SleepNeed) / \tau}\right)
+$$
+
+$$
+D_t = \max\left(0, \lambda D_{t-1} + \Delta D_{recovery}\right)
+$$
+
+参数建议：
+- $R_{max} = 3.0$（单日最大睡眠债恢复量，单位：小时）
+- $\tau = 2.0$（饱和速率：oversleep 2h 达到约 $63\%$ 的 $R_{max}$）
 
 ## S3. Habit Strength (H) - 慢变量 (Asymmetric)
 
