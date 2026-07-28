@@ -2,7 +2,12 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
-## [v0.3-nightly] - 2026-07-25
+## [v0.3-nightly] - 2026-07-28
+
+### Changed
+
+- Replaced `st.time_input` with `st.text_input` in daily entry form to remove dropdown time-picker popup. Swapped input order (sleep before wake) to match natural entry flow. Added HH:MM format validation on submit.
+- Sleep debt recovery changed from absolute (`R_max=3.0`, fixed cap per night) to proportional (`k=0.4`, recovers k*D of current debt). Addresses chronic debt not clearing in 1-2 nights per Van Dongen (2003) et al.
 
 ### Added
 

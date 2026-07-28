@@ -24,6 +24,8 @@ exports/
 # Project maintenance instructions
 AGENTS.md
 .roo/
+opencode.json
+tasks.md
 
 # OS files
 .DS_Store
