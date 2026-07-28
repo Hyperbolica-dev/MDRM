@@ -60,7 +60,7 @@ L = {
         "test_lambda_d": "lambda_d",
         "test_alpha_up": "alpha_up",
         "test_alpha_down": "alpha_down",
-        "test_recovery_max_hours": "Recovery Max (h)",
+        "test_recovery_k": "Recovery Max (h)",
         "test_recovery_saturation_tau": "Saturation τ",
         "test_reset": "Reset to Defaults",
         "form_date": "Date",
@@ -139,7 +139,7 @@ L = {
         "test_lambda_d": "lambda_d",
         "test_alpha_up": "alpha_up",
         "test_alpha_down": "alpha_down",
-        "test_recovery_max_hours": "最大恢复量 (h)",
+        "test_recovery_k": "最大恢复量 (h)",
         "test_recovery_saturation_tau": "饱和速率 τ",
         "test_reset": "恢复默认参数",
         "form_date": "日期",
@@ -362,7 +362,7 @@ def rebuild_persisted_records(raw_df: pd.DataFrame):
         config["lambda_d"],
         config["alpha_up"],
         config["alpha_down"],
-        config["recovery_max_hours"],
+        config["recovery_k"],
         config["recovery_saturation_tau"],
     )
     daily_summary = dynamics.build_daily_summary_frame(
@@ -372,7 +372,7 @@ def rebuild_persisted_records(raw_df: pd.DataFrame):
         config["lambda_d"],
         config["alpha_up"],
         config["alpha_down"],
-        config["recovery_max_hours"],
+        config["recovery_k"],
         config["recovery_saturation_tau"],
     )
 
@@ -418,7 +418,7 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
         params["lambda_d"],
         params["alpha_up"],
         params["alpha_down"],
-        params["recovery_max_hours"],
+        params["recovery_k"],
         params["recovery_saturation_tau"],
     )
 
@@ -659,8 +659,8 @@ def initialize_test_parameter_state():
         st.session_state.test_alpha_up = float(config["alpha_up"])
     if "test_alpha_down" not in st.session_state:
         st.session_state.test_alpha_down = float(config["alpha_down"])
-    if "test_recovery_max_hours" not in st.session_state:
-        st.session_state.test_recovery_max_hours = float(config["recovery_max_hours"])
+    if "test_recovery_k" not in st.session_state:
+        st.session_state.test_recovery_k = float(config["recovery_k"])
     if "test_recovery_saturation_tau" not in st.session_state:
         st.session_state.test_recovery_saturation_tau = float(config["recovery_saturation_tau"])
 
@@ -675,7 +675,7 @@ def get_active_parameters():
         "lambda_d": float(st.session_state.get("test_lambda_d", config["lambda_d"])),
         "alpha_up": float(st.session_state.get("test_alpha_up", config["alpha_up"])),
         "alpha_down": float(st.session_state.get("test_alpha_down", config["alpha_down"])),
-        "recovery_max_hours": float(st.session_state.get("test_recovery_max_hours", config["recovery_max_hours"])),
+        "recovery_k": float(st.session_state.get("test_recovery_k", config["recovery_k"])),
         "recovery_saturation_tau": float(st.session_state.get("test_recovery_saturation_tau", config["recovery_saturation_tau"])),
     }
 
@@ -745,11 +745,11 @@ with st.expander(_("test_panel_title"), expanded=False):
             value=float(st.session_state.test_sleep_need_hours),
             step=0.1,
         )
-        st.session_state.test_recovery_max_hours = st.number_input(
-            _("test_recovery_max_hours"),
+        st.session_state.test_recovery_k = st.number_input(
+            _("test_recovery_k"),
             min_value=0.0,
             max_value=24.0,
-            value=float(st.session_state.test_recovery_max_hours),
+            value=float(st.session_state.test_recovery_k),
             step=0.1,
         )
     with test_col2:
@@ -788,7 +788,7 @@ with st.expander(_("test_panel_title"), expanded=False):
         st.session_state.test_lambda_d = float(config["lambda_d"])
         st.session_state.test_alpha_up = float(config["alpha_up"])
         st.session_state.test_alpha_down = float(config["alpha_down"])
-        st.session_state.test_recovery_max_hours = float(config["recovery_max_hours"])
+        st.session_state.test_recovery_k = float(config["recovery_k"])
         st.session_state.test_recovery_saturation_tau = float(config["recovery_saturation_tau"])
         st.rerun()
 
@@ -799,8 +799,8 @@ with st.form("daily_entry"):
     today = st.date_input(_("form_date"), date.today())
     col1, col2 = st.columns(2)
     with col1:
-        wake_time = st.time_input(_("form_wake_time"))
-        sleep_time = st.time_input(_("form_sleep_time"))
+        sleep_time = st.text_input(_("form_sleep_time"), placeholder="HH:MM")
+        wake_time = st.text_input(_("form_wake_time"), placeholder="HH:MM")
     with col2:
         momentum = st.slider(_("form_momentum"), 0, 10, 5)
         disturbance = st.checkbox(_("form_disturbance"), value=False)
@@ -809,16 +809,17 @@ with st.form("daily_entry"):
     submitted = st.form_submit_button(_("form_submit"))
 
 if submitted:
-    df = load_records_frame()
+    if not TIME_PATTERN.match(sleep_time) or not TIME_PATTERN.match(wake_time):
+        st.error("Time must be in HH:MM format")
+        st.stop()
 
-    wake_str = wake_time.strftime("%H:%M")
-    sleep_str = sleep_time.strftime("%H:%M")
+    df = load_records_frame()
 
     new_record = pd.DataFrame([{
         "schema_version": CURRENT_SCHEMA_VERSION,
         "date": today,
-        "wake_time": wake_str,
-        "sleep_time": sleep_str,
+        "wake_time": wake_time,
+        "sleep_time": sleep_time,
         "momentum": momentum,
         "disturbance": int(disturbance),
         "sleep_medication": bool(sleep_medication),
@@ -837,7 +838,7 @@ if submitted:
         active_params['lambda_d'],
         active_params['alpha_up'],
         active_params['alpha_down'],
-        active_params['recovery_max_hours'],
+        active_params['recovery_k'],
         active_params['recovery_saturation_tau'],
     )
 

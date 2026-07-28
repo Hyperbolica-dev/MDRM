@@ -84,7 +84,7 @@ def calculate_daily_state(
     lambda_d: float,
     alpha_up: float,
     alpha_down: float,
-    recovery_max_hours: float = 3.0,
+    recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
 ):
     """Recalculate the latest rhythm-day state from all stored sleep sessions.
@@ -100,7 +100,7 @@ def calculate_daily_state(
         lambda_d,
         alpha_up,
         alpha_down,
-        recovery_max_hours,
+        recovery_k,
         recovery_saturation_tau,
     )
 
@@ -125,7 +125,7 @@ def build_daily_summary_frame(
     lambda_d: float,
     alpha_up: float,
     alpha_down: float,
-    recovery_max_hours: float = 3.0,
+    recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
 ):
     """Build one summary row per rhythm day from a derived session frame."""
@@ -144,7 +144,7 @@ def build_daily_summary_frame(
         total_sleep = float(current_bucket["sleep_hours"].sum())
         if total_sleep <= 0:
             p_t = 0.0
-            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_max_hours, recovery_saturation_tau)
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
             h_t = alpha_down * h_prev
             in_attr = check_attractor(p_t, d_t)
         else:
@@ -154,7 +154,7 @@ def build_daily_summary_frame(
             else:
                 representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
             p_t = calculate_phase(representative["wake_time"], wake_target_str)
-            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_max_hours, recovery_saturation_tau)
+            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
             h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
             in_attr = check_attractor(p_t, d_t)
 
@@ -194,22 +194,22 @@ def calculate_sleep_debt(
     sleep_actual: float,
     sleep_need: float,
     lambda_d: float,
-    recovery_max_hours: float = 3.0,
+    recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
 ) -> float:
     excess = sleep_actual - sleep_need
     if excess <= 0:
         return max(0, lambda_d * d_prev - excess)
-    saturated_recovery = recovery_max_hours * (1 - math.exp(-excess / recovery_saturation_tau))
+    saturated_recovery = d_prev * recovery_k * (1 - math.exp(-excess / recovery_saturation_tau))
     return max(0, lambda_d * d_prev - saturated_recovery)
 
+
 def calculate_habit(h_prev: float, p_current: float, alpha_up: float, alpha_down: float) -> float:
-    """计算行为惯性 H_t (非对称演化)"""
     if abs(p_current) < 1.0:
         return alpha_up * h_prev + (1 - alpha_up)
     else:
         return alpha_down * h_prev
 
+
 def check_attractor(p_current: float, d_current: float) -> bool:
-    """判定当前是否在吸引域内"""
     return abs(p_current) < 1.0 and d_current < 5.0
