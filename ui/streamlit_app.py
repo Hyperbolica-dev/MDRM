@@ -5,6 +5,8 @@ import os
 import shutil
 import importlib
 import re
+import math
+import numpy as np
 from datetime import date, datetime, timedelta
 import sys
 
@@ -72,10 +74,6 @@ L = {
         "form_submit": "Record & Calculate State",
         "submit_success": "Record saved!",
         "submit_state": "**Current state:** Rhythm day {day} | Phase(P): {p}h | Sleep Debt(D): {d}h | Habit Depth(H): {h} | Total sleep: {sleep}h | Sessions: {sessions}",
-        "calc_principles_title": "P / D / H Calculation Principles",
-        "calc_p": "- **P (Phase)**: Based on the main sleep session end time in the rhythm day, relative to the target wake time.",
-        "calc_d": "- **D (Sleep Debt)**: Total sleep hours summed per rhythm day, accumulated recursively.",
-        "calc_h": "- **H (Habit Strength)**: Rises slowly when phase is near target (within ~1 h), decays quickly when phase drifts away.",
         "data_mgmt_title": "Raw Data Review & Management",
         "data_mgmt_caption": "For correcting and cleaning raw records. A backup is created before saving and the daily 10-second entry flow is unaffected.",
         "info_no_data": "No raw data yet.",
@@ -98,6 +96,29 @@ L = {
         "chart_habit": "Habit Strength H",
         "chart_date": "Date",
         "chart_title": "Core Trend Charts ({range})",
+        "diagnosis_insufficient": "Insufficient Data",
+        "diagnosis_locked": "Locked",
+        "diagnosis_jetlag": "Social Jetlag",
+        "diagnosis_deprivation": "Acute Deprivation",
+        "diagnosis_advance": "Phase Advance",
+        "diagnosis_drift": "Rhythm Drift",
+        "diagnosis_unknown": "Unknown",
+        "converging": "Converging to Attractor",
+        "diverging": "Diverging",
+        "convergence_insufficient": "Insufficient Data",
+        "guide_title": "P-D Phase Space & Attractor Guide",
+        "guide_content": (
+            "- **X-axis (P)**: Mid-sleep phase offset. $P=M_{actual}-M_{target}$, where $M=T_{wake}-SleepDuration/2$.\n"
+            "- **Y-axis (D)**: Cumulative sleep debt (integrated fatigue).\n"
+            "- **Green zone**: User-defined attractor (default $|P|<1$h, $D<5$h).\n"
+            "- **Fading**: Older points fade (opacity $\\propto e^{-0.2\\Delta t}$).\n"
+            "- **Gold ring**: Current state.\n\n"
+            "**Attractor Core**: $|P|\\le 1$h, $D\\le 2$h.\n\n"
+            "**Quadrant 1** ($P>1, D>2$): Social Jetlag.\n"
+            "**Quadrant 2** ($P<-1, D>2$): Acute Deprivation.\n"
+            "**Quadrant 3** ($P<-1, D\\le 2$): Phase Advance.\n"
+            "**Quadrant 4** ($P>1, D\\le 2$): Rhythm Drift, $H$ decaying."
+        ),
     },
     "cn": {
         "lang_name": "中文",
@@ -151,10 +172,6 @@ L = {
         "form_submit": "记录并计算系统状态",
         "submit_success": "记录成功！",
         "submit_state": "**当前系统状态:** 节律日 {day} | 相位偏移(P): {p}h | 睡眠债(D): {d}h | 势阱深度(H): {h} | 睡眠总时长: {sleep}h | 段数: {sessions}",
-        "calc_principles_title": "P / D / H 计算原则",
-        "calc_p": "- **P（相位）**：只看该节律日中的主睡眠段结束时间，相对于目标起床时间的偏移。",
-        "calc_d": "- **D（睡眠债）**：按节律日把所有睡眠段的时长加总，再用递推式累积到当前债务。",
-        "calc_h": "- **H（习惯强度）**：只有当主相位落在目标附近（约 1 小时内）时才缓慢上升，偏离目标时快速衰减。",
         "data_mgmt_title": "原始数据阅览与管理",
         "data_mgmt_caption": "这里用于纠错和清理原始记录；保存前会先生成备份，不影响日常 10 秒录入流程。",
         "info_no_data": "当前还没有原始数据。",
@@ -177,6 +194,29 @@ L = {
         "chart_habit": "习惯强度 H",
         "chart_date": "日期",
         "chart_title": "核心趋势图（{range}）",
+        "diagnosis_insufficient": "数据不足",
+        "diagnosis_locked": "稳态锁定",
+        "diagnosis_jetlag": "社交时差",
+        "diagnosis_deprivation": "应激剥夺",
+        "diagnosis_advance": "相位前移",
+        "diagnosis_drift": "无疲劳漂移",
+        "diagnosis_unknown": "未知",
+        "converging": "收敛中",
+        "diverging": "离心漂移中",
+        "convergence_insufficient": "数据不足",
+        "guide_title": "P-D 相图与吸引子阅读指南",
+        "guide_content": (
+            "- **X 轴 (P)**：中睡相位偏移。$P=M_{actual}-M_{target}$，其中 $M=T_{wake}-SleepDuration/2$。\n"
+            "- **Y 轴 (D)**：累积睡眠债（积分疲劳）。\n"
+            "- **绿色区域**：用户定义的吸引域（默认 $|P|<1$h, $D<5$h）。\n"
+            "- **颜色渐变**：越旧的数据点越淡（透明度衰减 $\\propto e^{-0.2\\Delta t}$）。\n"
+            "- **金环**：当前状态。\n\n"
+            "**吸引子核心 (Core)**: $|P|\\le 1$h, $D\\le 2$h — 节律锁定稳态。\n\n"
+            "**Quadrant 1** ($P>1, D>2$)：社交时差，晚睡且债务高。\n"
+            "**Quadrant 2** ($P<-1, D>2$)：严重睡眠剥夺。\n"
+            "**Quadrant 3** ($P<-1, D\\le 2$)：相位前移，但睡眠充足。\n"
+            "**Quadrant 4** ($P>1, D\\le 2$)：漂移期，$H$ 正在衰减。"
+        ),
     },
 }
 
@@ -444,6 +484,7 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
 
 
 def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, attractor_d_limit: float):
+    from scipy.interpolate import CubicSpline
     if daily_points.empty:
         st.info(_("info_no_pd_data"))
         return
@@ -457,6 +498,12 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
 
     inside_mask = (plot_frame["P"].abs() <= attractor_p_limit) & (plot_frame["D"] <= attractor_d_limit)
 
+    today = pd.Timestamp.now().normalize()
+    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds() / 86400.0
+    opacities = days_elapsed.apply(
+        lambda d: max(0.30, 0.92 * math.exp(-0.2 * max(0, d - 7)))
+    )
+
     fig = go.Figure()
 
     fig.add_shape(type="rect", x0=-attractor_p_limit, y0=0, x1=attractor_p_limit, y1=attractor_d_limit,
@@ -466,25 +513,55 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     fig.add_vline(x=-attractor_p_limit, line=dict(color="#4a7d57", dash="dash", width=1))
     fig.add_vline(x=attractor_p_limit, line=dict(color="#4a7d57", dash="dash", width=1))
 
-    for i in range(len(plot_frame) - 1):
-        x0, y0 = plot_frame.iloc[i]["P"], plot_frame.iloc[i]["D"]
-        x1, y1 = plot_frame.iloc[i + 1]["P"], plot_frame.iloc[i + 1]["D"]
-        fig.add_annotation(x=x1, y=y1, ax=x0, ay=y0, xref="x", yref="y", axref="x", ayref="y",
-                           showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1.2, arrowcolor="#556270", opacity=0.75)
+    p_vals = plot_frame["P"].values
+    d_vals = plot_frame["D"].values
+    n = len(p_vals)
+
+    if n >= 3:
+        seg_dists = np.sqrt(np.diff(p_vals) ** 2 + np.diff(d_vals) ** 2)
+        t_norm = np.zeros(n)
+        t_norm[1:] = np.cumsum(seg_dists)
+        if t_norm[-1] > 1e-9:
+            t_norm = t_norm / t_norm[-1]
+            t_high = np.linspace(0, 1, (n - 1) * 15 + 1)
+            cs_p = CubicSpline(t_norm, p_vals, bc_type="natural")
+            cs_d = CubicSpline(t_norm, d_vals, bc_type="natural")
+            p_smooth = cs_p(t_high)
+            d_smooth = cs_d(t_high)
+            fig.add_trace(go.Scatter(
+                x=p_smooth, y=d_smooth, mode="lines",
+                line=dict(color="#556270", width=2), opacity=0.7,
+                showlegend=False, hoverinfo="skip"
+            ))
+        else:
+            fig.add_trace(go.Scatter(
+                x=p_vals, y=d_vals, mode="lines",
+                line=dict(color="#556270", width=2, shape="spline", smoothing=1.3),
+                opacity=0.7, showlegend=False, hoverinfo="skip"
+            ))
+    elif n == 2:
+        fig.add_trace(go.Scatter(
+            x=p_vals, y=d_vals, mode="lines",
+            line=dict(color="#556270", width=2, shape="spline", smoothing=1.3),
+            opacity=0.7, showlegend=False, hoverinfo="skip"
+        ))
 
     tooltip_cols = ["H", "wake_time", "sleep_hours", "momentum", "disturbance"]
+    common_hover = (
+        "<b>%{text}</b><br>P: %{x:.2f} h<br>D: %{y:.2f} h<br>"
+        "H: %{customdata[0]:.3f}<br>Wake: %{customdata[1]}<br>"
+        "Sleep: %{customdata[2]:.1f} h<br>Momentum: %{customdata[3]}<br>"
+        "Disturbance: %{customdata[4]}<br>"
+    )
+
     outside = plot_frame[~inside_mask]
     if not outside.empty:
         fig.add_trace(go.Scatter(
             x=outside["P"], y=outside["D"], mode="markers",
-            marker=dict(color="#d1495b", size=8),
+            marker=dict(color="#d1495b", size=8,
+                        opacity=opacities[~inside_mask.values].tolist()),
             name="Outside attractor",
-            hovertemplate=(
-                "<b>%{text}</b><br>P: %{x:.2f} h<br>D: %{y:.2f} h<br>"
-                "H: %{customdata[0]:.3f}<br>Wake: %{customdata[1]}<br>"
-                "Sleep: %{customdata[2]:.1f} h<br>Momentum: %{customdata[3]}<br>"
-                "Disturbance: %{customdata[4]}<br>Attractor: No<extra></extra>"
-            ),
+            hovertemplate=common_hover + "Attractor: No<extra></extra>",
             text=outside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=outside[tooltip_cols].to_numpy(),
         ))
@@ -493,14 +570,10 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     if not inside.empty:
         fig.add_trace(go.Scatter(
             x=inside["P"], y=inside["D"], mode="markers",
-            marker=dict(color="#2a9d5b", size=8),
+            marker=dict(color="#2a9d5b", size=8,
+                        opacity=opacities[inside_mask.values].tolist()),
             name="Inside attractor",
-            hovertemplate=(
-                "<b>%{text}</b><br>P: %{x:.2f} h<br>D: %{y:.2f} h<br>"
-                "H: %{customdata[0]:.3f}<br>Wake: %{customdata[1]}<br>"
-                "Sleep: %{customdata[2]:.1f} h<br>Momentum: %{customdata[3]}<br>"
-                "Disturbance: %{customdata[4]}<br>Attractor: Yes<extra></extra>"
-            ),
+            hovertemplate=common_hover + "Attractor: Yes<extra></extra>",
             text=inside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=inside[tooltip_cols].to_numpy(),
         ))
@@ -510,14 +583,9 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     fig.add_trace(go.Scatter(
         x=[latest["P"]], y=[latest["D"]], mode="markers",
         marker=dict(color="#ffb703", size=15, line=dict(color="#1f2937", width=1),
-                     symbol="circle", opacity=0.8),
+                     symbol="circle", opacity=0.85),
         name="Current state",
-        hovertemplate=(
-            "<b>%{text}</b><br>P: %{x:.2f} h<br>D: %{y:.2f} h<br>"
-            "H: %{customdata[0]:.3f}<br>Wake: %{customdata[1]}<br>"
-            "Sleep: %{customdata[2]:.1f} h<br>Momentum: %{customdata[3]}<br>"
-            f"Disturbance: %{{customdata[4]}}<br>Attractor: {latest_status}<extra></extra>"
-        ),
+        hovertemplate=common_hover + f"Attractor: {latest_status}<extra></extra>",
         text=[latest["rhythm_day"].strftime("%Y-%m-%d")],
         customdata=latest[tooltip_cols].to_numpy().reshape(1, -1),
     ))
@@ -542,6 +610,38 @@ def add_attractor_status_label(is_inside: bool):
         st.success(label)
     else:
         st.error(label)
+
+
+def diagnose_attractor_state(p, d):
+    if p is None or (isinstance(p, float) and math.isnan(p)):
+        return "diagnosis_insufficient", "#9ca3af"
+    if abs(p) <= 1 and d <= 2:
+        return "diagnosis_locked", "#2a9d5b"
+    if p > 1 and d > 2:
+        return "diagnosis_jetlag", "#d1495b"
+    if p < -1 and d > 2:
+        return "diagnosis_deprivation", "#d1495b"
+    if p < -1 and d <= 2:
+        return "diagnosis_advance", "#e9c46a"
+    if p > 1 and d <= 2:
+        return "diagnosis_drift", "#e9c46a"
+    return "diagnosis_unknown", "#9ca3af"
+
+
+def check_convergence(summary_df):
+    if len(summary_df) < 2:
+        return "convergence_insufficient"
+    valid = summary_df.dropna(subset=["P", "D"])
+    if len(valid) < 2:
+        return "convergence_insufficient"
+    curr = valid.iloc[-1]
+    prev = valid.iloc[-2]
+    d_curr = math.sqrt(curr["P"] ** 2 + curr["D"] ** 2)
+    d_prev = math.sqrt(prev["P"] ** 2 + prev["D"] ** 2)
+    if d_curr < d_prev:
+        return "converging"
+    else:
+        return "diverging"
 
 
 def filter_points_by_range(daily_points: pd.DataFrame, range_label: str):
@@ -712,7 +812,9 @@ else:
 
 dashboard_col1, dashboard_col2, dashboard_col3, dashboard_col4 = st.columns(4)
 with dashboard_col1:
-    st.metric(_("metric_p"), f"{float(observer.get('P', 0.0)):.2f} h")
+    p_val = observer.get("P")
+    p_display = f"{p_val:.2f} h" if p_val is not None else "N/A"
+    st.metric(_("metric_p"), p_display)
 with dashboard_col2:
     st.metric(_("metric_d"), f"{float(observer.get('D', 0.0)):.2f} h")
 with dashboard_col3:
@@ -721,13 +823,36 @@ with dashboard_col4:
     status_label = _("label_inside") if int(observer.get("in_attractor", 0)) == 1 else _("label_outside")
     st.metric(_("metric_attractor"), status_label)
 
-add_attractor_status_label(int(observer.get("in_attractor", 0)) == 1)
+add_attractor_status_label(bool(observer.get("in_attractor", 0)))
 
 if daily_points.empty:
     st.info(_("info_no_records"))
 else:
     st.caption(_("caption_trajectory"))
     draw_state_trajectory(daily_points, attractor_p_limit, attractor_d_limit)
+
+    diag_label_key, diag_color = diagnose_attractor_state(observer.get("P"), observer.get("D"))
+    conv_key = check_convergence(daily_summary)
+
+    st.markdown("---")
+    diag_col1, diag_col2 = st.columns(2)
+    with diag_col1:
+        st.markdown(
+            f"<div style='color:#e0e0e0;padding:8px 12px;"
+            f"border-left:4px solid {diag_color};"
+            f"font-weight:600;font-size:1rem;'>{_(diag_label_key)}</div>",
+            unsafe_allow_html=True,
+        )
+    with diag_col2:
+        st.markdown(
+            f"<div style='color:#e0e0e0;padding:8px 12px;"
+            f"border-left:4px solid #8899aa;"
+            f"font-weight:500;font-size:1rem;'>{_(conv_key)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.expander(_("guide_title"), expanded=False):
+        st.markdown(_("guide_content"))
 
 st.subheader(_("charts_title"))
 range_choice = st.selectbox(_("time_range"), ["7D", "30D", "90D", "All"], index=1)
@@ -850,21 +975,15 @@ if submitted:
     save_records_frame(df, create_backup=False)
     
     st.success(_("submit_success"))
+    p_str = f"{summary['P']:.2f}" if summary.get('P') is not None else "N/A"
     st.write(
         _("submit_state",
           day=summary['rhythm_day'],
-          p=summary['P'],
+          p=p_str,
           d=summary['D'],
           h=summary['H'],
           sleep=summary['sleep_hours'],
           sessions=summary['session_count'])
-    )
-
-with st.expander(_("calc_principles_title"), expanded=False):
-    st.markdown(
-        _("calc_p") + "\n" +
-        _("calc_d") + "\n" +
-        _("calc_h")
     )
 
 st.subheader(_("data_mgmt_title"))
@@ -926,10 +1045,11 @@ else:
             cleaned_df = cleaned_df[["schema_version"] + RAW_COLUMNS]
             summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df)
             save_records_frame(persisted, create_backup=True)
+            p_str = f"{summary['P']:.2f}" if summary.get('P') is not None else "N/A"
             st.success(
                 _("save_ok",
                   day=summary['rhythm_day'],
-                  p=summary['P'],
+                  p=p_str,
                   d=summary['D'],
                   h=summary['H'])
             )

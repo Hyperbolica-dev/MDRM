@@ -2,6 +2,19 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
+## [v0.4] - 2026-07-30
+
+### Changed
+
+- Phase offset $P$ calculation refactored from wake-target-only to **Sleep Midpoint (MSM)** model: $P = M_{actual} - M_{target}$, where $M_{actual} = T_{wake} - SleepDuration/2$ and $M_{target} = WakeTarget - SleepNeed/2$. Proper 24-hour wrap-around handling applied.
+- P-D phase space trajectory chart updated: line segments now use **spline interpolation** (`shape='spline'`, `smoothing=1.3`) instead of arrow annotations, with **temporal opacity decay** ($\text{opacity} = \max(0.15, e^{-0.3 \Delta t})$) so older points fade into the background.
+
+### Added
+
+- **Zero-sleep / all-nighter edge case**: When `SleepDuration == 0`, phase offset $P$ is set to `None` (exempt from MSM calculation), full `SleepNeed` is added to sleep debt without recovery decay, and habit strength $H$ decays rapidly via `alpha_down`.
+- **Attractor State Interpreter**: Dynamic diagnosis panel below the P-D phase space chart evaluates current $(P, D, H)$ with color-coded status card (稳态锁定 / Social Jetlag / Acute Deprivation / Phase Advance / Rhythm Drift) and convergence indicator (收敛中 / 离心漂移中).
+- **Interactive guide expander** (`"📖 如何阅读 P-D 相图与吸引子？"`) explaining X/Y axes, attractor zone, temporal fading, and quadrant definitions.
+
 ## [v0.3-nightly] - 2026-07-28
 
 ### Changed

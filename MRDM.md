@@ -1,6 +1,6 @@
 # Minimal Rhythm Dynamics Model (MRDM)
 
-Version: v0.3-nightly
+Version: v0.4
 
 ---
 
@@ -61,11 +61,26 @@ $$
 
 ## S1. Circadian Phase (P) - 慢变量
 
-生物钟相对于目标节律的偏移程度。
+生物钟相对于目标节律的偏移程度，基于**中睡时间 (Mid-Sleep Time, MSM)** 模型。
 
+目标中睡时间：
 $$
-P_t = Wake_t - Wake_{target}
+M_{target} = WakeTarget - \frac{SleepNeed}{2}
 $$
+
+实际中睡时间：
+$$
+M_{actual} = T_{wake} - \frac{SleepDuration}{2}
+$$
+
+相位偏移：
+$$
+P_t = M_{actual} - M_{target}
+$$
+
+必要时对 $P_t$ 做 $[-12, 12)$ 小时范围的模数折叠。
+
+当 $SleepDuration = 0$（通宵）时，$P_t$ 未定义（标记为 `None`），且不计入 $H$ 的相位约束；同时全额 $SleepNeed$ 加入 $D_t$（无恢复衰减），$H_t$ 快速衰减。
 
 单位：hour
 
