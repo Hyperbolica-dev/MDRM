@@ -8,17 +8,10 @@ EVENING_SLEEP_THRESHOLD = datetime.strptime("18:00", "%H:%M").time()
 
 
 def parse_clock_time(time_str: str):
-    """Parse an HH:MM clock string into a time object."""
     return datetime.strptime(time_str, "%H:%M").time()
 
 
 def build_sleep_session(session_date: date, sleep_start_str: str, wake_end_str: str):
-    """Build a normalized sleep interval anchored to the entered wake date.
-
-    The entered date is treated as the wake date. If the sleep start time is
-    later than the wake time, the sleep start is moved to the previous day to
-    represent a session that crossed midnight.
-    """
     sleep_start = datetime.combine(session_date, parse_clock_time(sleep_start_str))
     wake_end = datetime.combine(session_date, parse_clock_time(wake_end_str))
 
@@ -29,17 +22,10 @@ def build_sleep_session(session_date: date, sleep_start_str: str, wake_end_str: 
 
 
 def calculate_sleep_duration_hours(sleep_start: datetime, wake_end: datetime) -> float:
-    """Return the duration of a sleep interval in hours."""
     return (wake_end - sleep_start).total_seconds() / 3600.0
 
 
 def assign_rhythm_day(sleep_start: datetime, wake_end: datetime, wake_target_str: str) -> date:
-    """Assign a sleep session to its rhythm day using wake-date anchoring.
-
-    Overnight sleep that crosses midnight belongs to the wake date.
-    Same-day evening sleep is pushed to the next rhythm day so it contributes
-    to the following day's energy budget.
-    """
     _ = wake_target_str
     if wake_end.date() > sleep_start.date():
         return wake_end.date()
@@ -49,7 +35,6 @@ def assign_rhythm_day(sleep_start: datetime, wake_end: datetime, wake_target_str
 
 
 def derive_session_frame(df, wake_target_str: str):
-    """Add rhythm-day and duration columns to a raw session dataframe."""
     if df.empty:
         return df.copy()
 
@@ -87,11 +72,6 @@ def calculate_daily_state(
     recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
 ):
-    """Recalculate the latest rhythm-day state from all stored sleep sessions.
-
-    Returns a tuple of (summary_row, derived_frame). The summary row contains
-    the current rhythm-day P, D, H, and attractor state.
-    """
     derived = derive_session_frame(df, wake_target_str)
     daily_summary = build_daily_summary_frame(
         derived,
@@ -128,7 +108,6 @@ def build_daily_summary_frame(
     recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
 ):
-    """Build one summary row per rhythm day from a derived session frame."""
     if derived.empty:
         return derived.copy()
 
@@ -143,17 +122,17 @@ def build_daily_summary_frame(
         current_bucket = ordered[ordered["main_sleep_day"] == rhythm_day]
         total_sleep = float(current_bucket["sleep_hours"].sum())
         if total_sleep <= 0:
-            p_t = 0.0
+            p_t = None
             d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
             h_t = alpha_down * h_prev
-            in_attr = check_attractor(p_t, d_t)
+            in_attr = 0
         else:
             main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
             if not main_sleep_bucket.empty:
                 representative = main_sleep_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
             else:
                 representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
-            p_t = calculate_phase(representative["wake_time"], wake_target_str)
+            p_t = calculate_phase(representative["wake_time"], wake_target_str, sleep_need, total_sleep)
             d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
             h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
             in_attr = check_attractor(p_t, d_t)
@@ -161,7 +140,7 @@ def build_daily_summary_frame(
         summary_rows.append(
             {
                 "rhythm_day": rhythm_day,
-                "P": round(p_t, 2),
+                "P": round(p_t, 2) if p_t is not None else None,
                 "D": round(d_t, 2),
                 "H": round(h_t, 3),
                 "in_attractor": int(in_attr),
@@ -176,18 +155,51 @@ def build_daily_summary_frame(
     return pd.DataFrame(summary_rows)
 
 
-def calculate_phase(wake_actual_str: str, wake_target_str: str) -> float:
-    """计算相位偏移 P_t (小时)"""
+def calculate_phase(wake_actual_str, wake_target_str, sleep_need, total_sleep):
     fmt = "%H:%M"
     wake_actual = datetime.strptime(wake_actual_str, fmt)
     wake_target = datetime.strptime(wake_target_str, fmt)
-    
-    # 处理跨天情况 (比如凌晨3点醒)
-    diff = (wake_actual - wake_target).total_seconds() / 3600.0
+
+    wa_hours = wake_actual.hour + wake_actual.minute / 60.0
+    wt_hours = wake_target.hour + wake_target.minute / 60.0
+
+    m_actual = wa_hours - total_sleep / 2.0
+    m_target = wt_hours - sleep_need / 2.0
+
+    diff = m_actual - m_target
+
     if diff > 12: diff -= 24
     elif diff < -12: diff += 24
-        
+
     return diff
+
+
+def estimate_cbt_min(wake_actual_str: str, total_sleep: float) -> float:
+    fmt = "%H:%M"
+    wake_actual = datetime.strptime(wake_actual_str, fmt)
+    wa_hours = wake_actual.hour + wake_actual.minute / 60.0
+    msm = wa_hours - total_sleep / 2.0
+    cbt_min = msm + 1.5
+    if cbt_min > 12:
+        cbt_min -= 24
+    elif cbt_min < -12:
+        cbt_min += 24
+    return cbt_min
+
+
+def prc_shift(cbt_min: float, light_hour: float, lux: float = 10000.0) -> float:
+    phase_angle = light_hour - cbt_min
+    while phase_angle > 12:
+        phase_angle -= 24
+    while phase_angle < -12:
+        phase_angle += 24
+
+    amplitude = min(1.2, 1.2 * lux / 10000.0)
+
+    if phase_angle < -6.0 or phase_angle > 6.0:
+        return 0.0
+    return -amplitude * math.sin(math.pi * phase_angle / 6.0)
+
 
 def calculate_sleep_debt(
     d_prev: float,
