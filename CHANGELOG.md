@@ -2,6 +2,65 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
+## [v0.5.3] - Unreleased
+
+### Added
+
+- Actionable non-light guidance when phase is uncertain beyond the safe light-therapy range.
+- Prominent rhythm observation conclusions based on current P/D state.
+- Sidebar profile selector with personal records and four generated read-only sample profiles: stable rhythm, phase delay, sleep debt, and phase advance.
+
+### Changed
+
+- Selected profiles use isolated record files and recalculate the complete observer state on every switch.
+
+
+## [v0.5.2] - 2026-07-31
+
+### Added
+
+- Polar coordinate P-D chart with a Cartesian/polar toggle.
+- Persistent target UTC-offset input and a seven-observation circular biological UTC estimate.
+- Provisional live-state panel driven by target-local system time and the last recorded wake.
+
+### Changed
+
+- Replaced spline interpolation with discrete straight segments and direction markers.
+- Moved trajectory direction markers from segment midpoints to segment endpoints.
+- Polar hover now reports phase offset in hours.
+
+### Fixed
+
+- Preserved persisted attractor thresholds when active test parameters are refreshed before record submission.
+- Split dashboard metrics across two rows so labels and values remain fully visible.
+
+## [v0.5.1] - 2026-07-31
+
+### Added
+
+- Passive CBT_min estimation and light-window guidance without new recording fields.
+- Safe mode suppresses light guidance when phase is undefined or `|P| > 6h`.
+
+## [v0.5] - 2026-07-31
+
+### Added
+
+- `ROADMAP.md`: version numbering convention and planned release roadmap.
+- `docs/theory/`: modular theory spec files (sleep debt proportional decay, MSM phase offset + CBT_min estimation, Khalsa PRC light therapy control law, polar phase space topology).
+- Seven-day consecutive attractor detection with persistent runtime P/D thresholds.
+- Internal missing rhythm days are inferred as all-nighters without extrapolating after the final record.
+
+### Changed
+
+- File structure reorganized:
+  - `MRDM.md` → `docs/MRDM.md`
+  - `references.md` → `reference/references.md`
+  - `start_mrdm.sh` → `scripts/start_mrdm.sh`
+  - `tasks.md` removed (archived content superseded by ROADMAP.md)
+  - `docs/THEORY_RESEARCH.md` removed (content split into `docs/theory/`)
+- AGENTS.md: updated file paths and added version numbering section.
+- README.md: updated to v0.5, new file structure table.
+
 ## [v0.4] - 2026-07-30
 
 ### Changed
