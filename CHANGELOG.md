@@ -2,7 +2,7 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
-## [v0.5.3] - Unreleased
+## [v0.5.3] - 2026-08-28
 
 ### Added
 

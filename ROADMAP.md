@@ -30,6 +30,31 @@ No new recording fields. No UI checkboxes. Closed-loop feedback via next-day $P$
 - Polar: angle = $P$, radius = $D$
 - Preserves tooltip, opacity decay, attractor zone coloring
 
+### v0.5.3 — Profiles and Actionable Guidance
+
+- Profile selector with personal records and four read-only sample profiles.
+- Actionable non-light intervention guidance when `|P| > 6h`.
+- Prominent P/D rhythm observation conclusions.
+- Cartesian and polar trajectory range controls with large-history rendering fallback.
+
+### v0.5.4 — Observability and Recovery Plan
+
+#### Scope
+
+- Mark `disturbance=1` observations distinctly in Cartesian and polar trajectories.
+- Calculate and annotate recovery duration from disturbance to attractor re-entry.
+- Encode habit strength $H$ with marker border width or border color while preserving time-based point size.
+- Add descriptive habit-observation cards for wake-time consistency, lock streak, disturbance count, and H trend.
+- Add UI behavior coverage for profile switching, guidance states, perturbation markers, and recovery boundaries.
+
+#### Acceptance Criteria
+
+- No `records.csv` schema change.
+- No new state equation or control input is introduced.
+- Missing or insufficient recovery data produces an explicit unavailable state, never an inferred duration.
+- Existing time, attractor-status, and P/D encodings remain distinguishable.
+- All existing dynamics tests and new UI behavior tests pass.
+
 ---
 
 ## Future Research Directions
