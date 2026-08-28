@@ -1,4 +1,4 @@
-# MRDM v0.3 System Configuration
+# MRDM v0.5 System Configuration
 target_wake: "08:30"
 sleep_need_hours: 7.0
 

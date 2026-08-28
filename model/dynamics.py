@@ -71,6 +71,9 @@ def calculate_daily_state(
     alpha_down: float,
     recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
+    attractor_p_limit: float = 1.0,
+    attractor_d_limit: float = 5.0,
+    attractor_days: int = 7,
 ):
     derived = derive_session_frame(df, wake_target_str)
     daily_summary = build_daily_summary_frame(
@@ -82,6 +85,9 @@ def calculate_daily_state(
         alpha_down,
         recovery_k,
         recovery_saturation_tau,
+        attractor_p_limit,
+        attractor_d_limit,
+        attractor_days,
     )
 
     if daily_summary.empty:
@@ -107,6 +113,9 @@ def build_daily_summary_frame(
     alpha_down: float,
     recovery_k: float = 0.4,
     recovery_saturation_tau: float = 2.0,
+    attractor_p_limit: float = 1.0,
+    attractor_d_limit: float = 5.0,
+    attractor_days: int = 7,
 ):
     if derived.empty:
         return derived.copy()
@@ -114,18 +123,20 @@ def build_daily_summary_frame(
     ordered = derived.sort_values(["wake_end_dt", "row_order"], ascending=[True, True]).copy()
 
     summary_rows = []
-    distinct_days = list(dict.fromkeys(ordered["main_sleep_day"].tolist()))
+    first_day = min(ordered["main_sleep_day"])
+    last_day = max(ordered["main_sleep_day"])
+    distinct_days = [value.date() for value in pd.date_range(first_day, last_day, freq="D")]
     d_prev = 0.0
     h_prev = 1.0
+    qualifying_days = 0
 
     for rhythm_day in distinct_days:
         current_bucket = ordered[ordered["main_sleep_day"] == rhythm_day]
         total_sleep = float(current_bucket["sleep_hours"].sum())
-        if total_sleep <= 0:
+        if current_bucket.empty or total_sleep <= 0:
             p_t = None
-            d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
+            d_t = d_prev + sleep_need
             h_t = alpha_down * h_prev
-            in_attr = 0
         else:
             main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
             if not main_sleep_bucket.empty:
@@ -135,7 +146,12 @@ def build_daily_summary_frame(
             p_t = calculate_phase(representative["wake_time"], wake_target_str, sleep_need, total_sleep)
             d_t = calculate_sleep_debt(d_prev, total_sleep, sleep_need, lambda_d, recovery_k, recovery_saturation_tau)
             h_t = calculate_habit(h_prev, p_t, alpha_up, alpha_down)
-            in_attr = check_attractor(p_t, d_t)
+
+        if check_attractor(p_t, d_t, attractor_p_limit, attractor_d_limit):
+            qualifying_days += 1
+        else:
+            qualifying_days = 0
+        in_attr = qualifying_days >= attractor_days
 
         summary_rows.append(
             {
@@ -187,6 +203,54 @@ def estimate_cbt_min(wake_actual_str: str, total_sleep: float) -> float:
     return cbt_min
 
 
+def can_recommend_light(p_current: float | None) -> bool:
+    return p_current is not None and not pd.isna(p_current) and abs(p_current) <= 6.0
+
+
+def estimate_biological_utc_offset(p_values, target_utc_offset: float) -> float | None:
+    valid_values = [float(value) for value in p_values if value is not None and not pd.isna(value)][-7:]
+    if not valid_values:
+        return None
+    angles = [math.pi * value / 12.0 for value in valid_values]
+    mean_sin = sum(math.sin(angle) for angle in angles) / len(angles)
+    mean_cos = sum(math.cos(angle) for angle in angles) / len(angles)
+    if math.hypot(mean_sin, mean_cos) < 1e-9:
+        return None
+    biological_phase = 12.0 * math.atan2(mean_sin, mean_cos) / math.pi
+    utc_offset = target_utc_offset - biological_phase
+    while utc_offset < -12.0:
+        utc_offset += 24.0
+    while utc_offset > 14.0:
+        utc_offset -= 24.0
+    return utc_offset
+
+
+def calculate_live_state(
+    last_wake: datetime | None,
+    current_time: datetime,
+    wake_target_str: str,
+    sleep_need: float,
+    formal_debt: float,
+):
+    if last_wake is None:
+        return None
+    next_target_wake = datetime.combine(last_wake.date() + timedelta(days=1), parse_clock_time(wake_target_str))
+    expected_sleep_start = next_target_wake - timedelta(hours=sleep_need)
+    assumed_awake_hours = max(0.0, (current_time - last_wake).total_seconds() / 3600.0)
+    missed_sleep_hours = min(
+        sleep_need,
+        max(0.0, (current_time - expected_sleep_start).total_seconds() / 3600.0),
+    )
+    return {
+        "current_time": current_time,
+        "last_wake": last_wake,
+        "expected_sleep_start": expected_sleep_start,
+        "assumed_awake_hours": assumed_awake_hours,
+        "missed_sleep_hours": missed_sleep_hours,
+        "projected_debt": formal_debt + missed_sleep_hours,
+    }
+
+
 def prc_shift(cbt_min: float, light_hour: float, lux: float = 10000.0) -> float:
     phase_angle = light_hour - cbt_min
     while phase_angle > 12:
@@ -223,5 +287,10 @@ def calculate_habit(h_prev: float, p_current: float, alpha_up: float, alpha_down
         return alpha_down * h_prev
 
 
-def check_attractor(p_current: float, d_current: float) -> bool:
-    return abs(p_current) < 1.0 and d_current < 5.0
+def check_attractor(
+    p_current: float | None,
+    d_current: float,
+    p_limit: float = 1.0,
+    d_limit: float = 5.0,
+) -> bool:
+    return p_current is not None and abs(p_current) < p_limit and d_current < d_limit
