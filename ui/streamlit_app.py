@@ -7,7 +7,7 @@ import importlib
 import re
 import math
 import numpy as np
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import sys
 
 import plotly.graph_objects as go
@@ -43,16 +43,26 @@ L = {
         "attractor_settings": "Attractor Settings",
         "attractor_p_limit": "|P| limit (hours)",
         "attractor_d_limit": "D limit (hours)",
-        "attractor_heuristic": "The rectangular attractor is a temporary heuristic and can later be replaced by density-based estimation.",
+        "attractor_heuristic": "These thresholds define formal attractor status and are saved separately from config.yaml.",
+        "target_utc_offset": "Target UTC offset",
+        "target_utc_offset_help": "UTC offset where the target rhythm is defined. Supports quarter-hour time zones.",
         "dashboard_title": "State Observer Dashboard",
         "metric_p": "P - Phase Offset",
         "metric_d": "D - Sleep Debt",
         "metric_h": "H - Habit Strength",
         "metric_attractor": "Attractor Status",
+        "metric_biological_utc": "Estimated Biological UTC",
+        "live_title": "Live State (Provisional)",
+        "live_caption": "Assumes the user has remained awake since the last recorded wake. These values are not saved.",
+        "live_current_time": "Target-local time",
+        "live_awake": "Assumed awake",
+        "live_missed_sleep": "Missed sleep window",
+        "live_projected_debt": "Projected debt",
+        "live_no_data": "A recorded wake time is required for live-state estimation.",
         "label_inside": "Inside Attractor",
         "label_outside": "Outside Attractor",
         "info_no_records": "No records yet. Use the daily entry form below to start the observer.",
-        "caption_trajectory": "Daily state points are connected in chronological order. The current state is highlighted with a gold ring.",
+        "caption_trajectory": "Zone shading shows intervention regions. Line opacity and point color (light→dark = old→recent) encode time. Last 14 days drawn as solid line. Arrows show last 5 steps of direction. Gold ring = current state.",
         "charts_title": "Core Trend Charts",
         "time_range": "Time range",
         "test_panel_title": "Test Panel",
@@ -113,12 +123,42 @@ L = {
             "- **Green zone**: User-defined attractor (default $|P|<1$h, $D<5$h).\n"
             "- **Fading**: Older points fade (opacity $\\propto e^{-0.2\\Delta t}$).\n"
             "- **Gold ring**: Current state.\n\n"
-            "**Attractor Core**: $|P|\\le 1$h, $D\\le 2$h.\n\n"
+            "**Formal status**: Seven consecutive rhythm days inside the selected strict P/D thresholds.\n\n"
             "**Quadrant 1** ($P>1, D>2$): Social Jetlag.\n"
             "**Quadrant 2** ($P<-1, D>2$): Acute Deprivation.\n"
             "**Quadrant 3** ($P<-1, D\\le 2$): Phase Advance.\n"
-            "**Quadrant 4** ($P>1, D\\le 2$): Rhythm Drift, $H$ decaying."
+            "**Quadrant 4** ($P>1, D\\le 2$): Rhythm Drift, $H$ decaying.\n\n"
+            "**Polar view**: Angle = $P$, radius = $D$. $0$h at top 12-o'clock, clockwise = delay zone.\n\n"
+            "**Light therapy**: CBT_min estimate anchors the light window. Expose to bright light >10000 lux for 30 min within the window to shift $P$ toward attractor."
         ),
+        "cbt_min": "Estimated CBT_min",
+        "cbt_min_help": "Estimated Core Body Temperature Minimum based on Sleep Midpoint (MSM), serving as the biological anchor for light therapy.",
+        "light_window": "Light therapy window",
+        "light_window_help": "Expose to bright light for 30 min in this window to actively shift your clock (Recommended: outdoor daylight, bright sunny window, or a light therapy lamp. Regular indoor lamps are insufficient).",
+        "light_deadband": "No light therapy needed (within deadband)",
+        "light_no_data": "Insufficient data for light therapy guidance",
+        "light_uncertain": "Uncertain phase (|P| > 6h). Light therapy is paused.",
+        "non_light_guidance": "For the next 3 days: wake within ±30 minutes of the target; keep the intended sleep window dark; avoid bright screens and strong light for 2 hours before sleep; avoid naps longer than 20 minutes or after 15:00; log sleep and wake times daily, then reassess. Do not use intentional bright-light phase shifting while |P| > 6h.",
+        "trajectory_range": "Trajectory range",
+        "profile_selector": "Profile",
+        "profile_personal": "Personal records",
+        "profile_stable": "Sample: Stable rhythm",
+        "profile_delay": "Sample: Phase delay",
+        "profile_debt": "Sample: Sleep debt",
+        "profile_advance": "Sample: Phase advance",
+        "profile_read_only": "Sample profiles are read-only.",
+        "copyright": "© 2026 Hyperbolica-dev · GitHub",
+        "observation_title": "Rhythm observation",
+        "observation_insufficient": "Observation inconclusive: valid phase data is insufficient.",
+        "observation_locked": "Stable lock: P={p}h and D={d}h remain within the selected attractor thresholds. Keep the current wake anchor.",
+        "observation_jetlag": "Combined delay and sleep debt: stabilize wake time and recover sleep before pursuing a stronger phase shift.",
+        "observation_deprivation": "Sleep debt is dominant: prioritize sufficient sleep opportunity and a fixed wake time before phase correction.",
+        "observation_advance": "Phase advance is dominant: keep the wake time consistent and avoid extending the schedule earlier until the phase returns toward target.",
+        "observation_drift": "Phase delay is dominant while debt remains controlled: preserve the wake anchor and use the light window consistently.",
+        "observation_unknown": "The current pattern is mixed: keep wake time stable and collect more consecutive records before changing intervention timing.",
+        "non_light_title": "Light paused: phase is uncertain",
+        "polar_toggle": "Polar view",
+        "caption_polar_trajectory": "Angle = phase offset P, radius = sleep debt D. 0h at 12-o'clock, clockwise = delay zone. Line opacity and point size encode recency.",
     },
     "cn": {
         "lang_name": "中文",
@@ -141,16 +181,26 @@ L = {
         "attractor_settings": "吸引域设置",
         "attractor_p_limit": "|P| 阈值（小时）",
         "attractor_d_limit": "D 阈值（小时）",
-        "attractor_heuristic": "矩形吸引域为临时启发式方法，后续可替换为基于密度的估计。",
+        "attractor_heuristic": "这些阈值用于正式吸引子状态判定，并独立于 config.yaml 保存。",
+        "target_utc_offset": "目标 UTC 偏移",
+        "target_utc_offset_help": "目标节律所在地的 UTC 偏移，支持 15 分钟时区。",
         "dashboard_title": "状态观察仪表盘",
         "metric_p": "P - 相位偏移",
         "metric_d": "D - 睡眠债",
         "metric_h": "H - 习惯强度",
         "metric_attractor": "吸引域状态",
+        "metric_biological_utc": "估算生物钟 UTC",
+        "live_title": "实时状态（暂估）",
+        "live_caption": "假设用户从最后一次记录的醒来时间起持续清醒；这些数值不会保存。",
+        "live_current_time": "目标所在地时间",
+        "live_awake": "假设清醒时长",
+        "live_missed_sleep": "错过睡眠窗口",
+        "live_projected_debt": "暂估睡眠债",
+        "live_no_data": "需要至少一条起床时间记录才能估算实时状态。",
         "label_inside": "处于吸引域内",
         "label_outside": "处于吸引域外",
         "info_no_records": "尚无记录，请使用下方每日录入表单启动观察器。",
-        "caption_trajectory": "每日状态点按时间顺序连接，当前状态用金环高亮。",
+        "caption_trajectory": "区域着色标注干预分区。线条透明度和点颜色（浅→深 = 旧→近）编码时间。最近14天轨迹以实线显示。箭头显示最近5步的方向。金环 = 当前状态。",
         "charts_title": "核心趋势图",
         "time_range": "时间范围",
         "test_panel_title": "测试台",
@@ -166,13 +216,13 @@ L = {
         "form_date": "日期",
         "form_wake_time": "起床时间 (O1)",
         "form_sleep_time": "睡眠开始时间 (O2)",
-        "form_momentum": "主观动量 (O3) [0失控 – 10理想]",
-        "form_disturbance": "发生重大扰动 (O4)（如通宵/生病）",
-        "form_medication": "使用助眠药物",
-        "form_submit": "记录并计算系统状态",
-        "submit_success": "记录成功！",
-        "submit_state": "**当前系统状态:** 节律日 {day} | 相位偏移(P): {p}h | 睡眠债(D): {d}h | 势阱深度(H): {h} | 睡眠总时长: {sleep}h | 段数: {sessions}",
-        "data_mgmt_title": "原始数据阅览与管理",
+        "form_momentum": "动量 (O3) [0-失调 – 10-理想]",
+        "form_disturbance": "重大扰动 (O4)（如通宵/疾病）",
+        "form_medication": "是否使用助眠药物",
+        "form_submit": "记录并计算状态",
+        "submit_success": "记录已保存！",
+        "submit_state": "**当前状态：** 节律日 {day} | 相位(P)：{p}h | 睡眠债(D)：{d}h | 习惯深度(H)：{h} | 总睡眠：{sleep}h | 睡眠段数：{sessions}",
+        "data_mgmt_title": "原始数据审查与管理",
         "data_mgmt_caption": "这里用于纠错和清理原始记录；保存前会先生成备份，不影响日常 10 秒录入流程。",
         "info_no_data": "当前还没有原始数据。",
         "manual_mgmt": "手动管理",
@@ -211,12 +261,42 @@ L = {
             "- **绿色区域**：用户定义的吸引域（默认 $|P|<1$h, $D<5$h）。\n"
             "- **颜色渐变**：越旧的数据点越淡（透明度衰减 $\\propto e^{-0.2\\Delta t}$）。\n"
             "- **金环**：当前状态。\n\n"
-            "**吸引子核心 (Core)**: $|P|\\le 1$h, $D\\le 2$h — 节律锁定稳态。\n\n"
+            "**正式状态**：连续七个节律日严格处于所选 P/D 阈值内。\n\n"
             "**Quadrant 1** ($P>1, D>2$)：社交时差，晚睡且债务高。\n"
             "**Quadrant 2** ($P<-1, D>2$)：严重睡眠剥夺。\n"
             "**Quadrant 3** ($P<-1, D\\le 2$)：相位前移，但睡眠充足。\n"
-            "**Quadrant 4** ($P>1, D\\le 2$)：漂移期，$H$ 正在衰减。"
+            "**Quadrant 4** ($P>1, D\\le 2$)：漂移期，$H$ 正在衰减。\n\n"
+            "**极坐标视图**：角度 = $P$，半径 = $D$。$0$h 在正上方 12 点钟方向，顺时针为延迟区。\n\n"
+            "**光疗指导**：CBT_min 估算值锚定光疗窗口。在窗口内接触 >10000 lux 强光 30 分钟可将 $P$ 拉回吸引域。"
         ),
+        "cbt_min": "估算核心体温最低点 (CBT_min)",
+        "cbt_min_help": "基于睡眠中点（MSM）推算的核心体温最低点，是昼夜节律相位的生理锚点，用于自动推算最有效的光疗时间。",
+        "light_window": "光疗建议窗口",
+        "light_window_help": "在此窗口内接触 30 分钟强光可主动纠正生物钟（推荐：前往户外接触自然光、坐在阳光充足的窗边，或使用专业光疗灯）。注意：普通室内吸顶灯亮度不足。",
+        "light_deadband": "无需光疗（位于死区内）",
+        "light_no_data": "数据不足，无法生成光疗建议",
+        "light_uncertain": "相位不确定（|P| > 6h），暂停光疗建议。",
+        "non_light_guidance": "接下来 3 天：起床时间控制在目标时间 ±30 分钟内；计划睡眠窗口保持昏暗；睡前 2 小时避免明亮屏幕和强光；避免超过 20 分钟或 15:00 后的小睡；每天记录睡眠和起床时间，之后重新评估。在 |P| > 6h 时不要使用主动强光移相。",
+        "trajectory_range": "轨迹时间范围",
+        "profile_selector": "节律档案",
+        "profile_personal": "个人记录",
+        "profile_stable": "示例：稳定节律",
+        "profile_delay": "示例：相位延迟",
+        "profile_debt": "示例：睡眠债累积",
+        "profile_advance": "示例：相位前移",
+        "profile_read_only": "示例档案为只读。",
+        "observation_title": "节律观察结论",
+        "observation_insufficient": "结论暂不明确：有效相位数据不足。",
+        "observation_locked": "稳定锁定：P={p}h、D={d}h 均处于当前吸引域阈值内。继续保持当前起床锚点。",
+        "observation_jetlag": "相位延迟与睡眠债同时突出：先固定起床时间并补足睡眠，再进行更强的相位调整。",
+        "observation_deprivation": "睡眠债是主要问题：先保证充足睡眠机会和固定起床时间，再处理相位校正。",
+        "profile_read_only": "示例档案为只读。",
+        "copyright": "© 2026 Hyperbolica-dev · GitHub",
+        "observation_drift": "相位延迟较突出但睡眠债受控：保持起床锚点，并按光疗窗口持续执行。",
+        "observation_unknown": "当前模式较混合：保持起床时间稳定，连续记录更多数据后再改变干预时点。",
+        "non_light_title": "光疗暂停：相位不确定",
+        "polar_toggle": "极坐标视图",
+        "caption_polar_trajectory": "角度 = 相位偏移 P，半径 = 睡眠债 D。12 点钟为 0h，顺时针为延迟区。线条透明度和点大小编码时间远近。",
     },
 }
 
@@ -231,7 +311,12 @@ def _(key, **kwargs):
 
 DATA_FILE = "data/records.csv"
 BACKUP_DIR = "data/backups"
+UI_SETTINGS_FILE = "data/ui_settings.yaml"
+PROFILE_DIR = "data/profiles"
+PROFILE_IDS = ("personal", "stable", "delay", "debt", "advance")
+SAMPLE_PROFILE_IDS = PROFILE_IDS[1:]
 CURRENT_SCHEMA_VERSION = 1
+ATTRACTOR_DAYS = 7
 BACKUP_RETENTION_COUNT = 30
 RAW_COLUMNS = ["date", "wake_time", "sleep_time", "momentum", "disturbance", "sleep_medication"]
 META_COLUMNS = ["schema_version"]
@@ -253,6 +338,65 @@ if not os.path.exists(DATA_FILE):
 
 def get_empty_records_frame():
     return pd.DataFrame(columns=PREFERRED_COLUMNS)
+def load_ui_settings():
+    defaults = {
+        "attractor_p_limit": 1.0,
+        "attractor_d_limit": 5.0,
+        "target_utc_offset": 0.0,
+        "profile_id": "personal",
+    }
+    if not os.path.exists(UI_SETTINGS_FILE):
+        return defaults
+    try:
+        with open(UI_SETTINGS_FILE, "r") as settings_file:
+            loaded = yaml.safe_load(settings_file) or {}
+        p_limit = float(loaded.get("attractor_p_limit", defaults["attractor_p_limit"]))
+        d_limit = float(loaded.get("attractor_d_limit", defaults["attractor_d_limit"]))
+        target_utc_offset = float(loaded.get("target_utc_offset", defaults["target_utc_offset"]))
+        profile_id = str(loaded.get("profile_id", defaults["profile_id"]))
+        if not math.isfinite(p_limit) or not 0.1 <= p_limit <= 12.0:
+            p_limit = defaults["attractor_p_limit"]
+        if not math.isfinite(d_limit) or not 0.1 <= d_limit <= 24.0:
+            d_limit = defaults["attractor_d_limit"]
+        if not math.isfinite(target_utc_offset) or not -12.0 <= target_utc_offset <= 14.0:
+            target_utc_offset = defaults["target_utc_offset"]
+        if profile_id not in PROFILE_IDS:
+            profile_id = defaults["profile_id"]
+        return {
+            "attractor_p_limit": p_limit,
+            "attractor_d_limit": d_limit,
+            "target_utc_offset": target_utc_offset,
+            "profile_id": profile_id,
+        }
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return defaults
+
+
+def save_ui_settings(attractor_p_limit: float, attractor_d_limit: float, target_utc_offset: float, profile_id: str = "personal"):
+    if profile_id not in PROFILE_IDS:
+        profile_id = "personal"
+    os.makedirs(os.path.dirname(UI_SETTINGS_FILE), exist_ok=True)
+    with open(UI_SETTINGS_FILE, "w") as settings_file:
+        yaml.safe_dump(
+            {
+                "attractor_p_limit": float(attractor_p_limit),
+                "attractor_d_limit": float(attractor_d_limit),
+                "target_utc_offset": float(target_utc_offset),
+                "profile_id": profile_id,
+            },
+            settings_file,
+            sort_keys=True,
+        )
+
+
+def format_utc_offset(offset: float | None) -> str:
+    if offset is None or pd.isna(offset):
+        return "N/A"
+    total_minutes = int(round(float(offset) * 60))
+    sign = "+" if total_minutes >= 0 else "-"
+    absolute_minutes = abs(total_minutes)
+    hours, minutes = divmod(absolute_minutes, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
 
 def ensure_schema_version_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -283,19 +427,19 @@ def keep_recent_backups(backup_dir: str = BACKUP_DIR, retention_count: int = BAC
             pass
 
 
-def ensure_daily_backup():
-    if not os.path.exists(DATA_FILE):
+def ensure_daily_backup(data_file: str = DATA_FILE):
+    if not os.path.exists(data_file):
         return
     os.makedirs(BACKUP_DIR, exist_ok=True)
     today_tag = datetime.now().strftime("%Y%m%d")
     existing_today = [
         name for name in os.listdir(BACKUP_DIR)
-        if name.startswith(f"records_backup_{today_tag}") and name.endswith(".csv")
+        if name.startswith("records_backup_") and name.endswith(".csv")
     ]
     if existing_today:
         return
     backup_name = datetime.now().strftime("records_backup_%Y%m%d_%H%M%S.csv")
-    shutil.copy2(DATA_FILE, os.path.join(BACKUP_DIR, backup_name))
+    shutil.copy2(data_file, os.path.join(BACKUP_DIR, backup_name))
     keep_recent_backups()
 
 
@@ -354,16 +498,67 @@ def write_records_frame(df: pd.DataFrame, path: str = DATA_FILE):
     output.to_csv(path, index=False)
 
 
-def load_records_frame():
-    if not os.path.exists(DATA_FILE):
+def load_records_frame(path: str = DATA_FILE):
+    if not os.path.exists(path):
         return get_empty_records_frame()
 
-    df = pd.read_csv(DATA_FILE)
+    df = pd.read_csv(path)
     for column in PREFERRED_COLUMNS:
         if column not in df.columns:
             df[column] = pd.NA
     return df[PREFERRED_COLUMNS]
 
+
+def profile_data_path(profile_id: str):
+    if profile_id == "personal":
+        return DATA_FILE
+    return os.path.join(PROFILE_DIR, f"{profile_id}.csv")
+
+
+def profile_clock(minutes: int):
+    hours, remainder = divmod(minutes, 60)
+    return f"{hours % 24:02d}:{remainder:02d}"
+
+
+def build_sample_profile(profile_id: str):
+    first_day = date.today() - timedelta(days=41)
+    rows = []
+    for index in range(42):
+        current_date = first_day + timedelta(days=index)
+        if profile_id == "stable":
+            sleep_minutes, wake_minutes = 60, 510
+            momentum, disturbance, medication = 9, 0, False
+        elif profile_id == "delay":
+            sleep_minutes = 180 + index * 8
+            wake_minutes = 660 + index * 8
+            momentum, disturbance, medication = 6, int(index in {12, 25}), False
+        elif profile_id == "advance":
+            sleep_minutes, wake_minutes = 1350, 390
+            momentum, disturbance, medication = 7, int(index in {8, 21, 34}), False
+        else:
+            sleep_minutes = 210 if index % 3 == 0 else 150
+            wake_minutes = 480 if index % 3 == 0 else 510
+            momentum, disturbance, medication = 3, int(index % 5 == 0), bool(index % 11 == 0)
+        rows.append(
+            {
+                "schema_version": CURRENT_SCHEMA_VERSION,
+                "date": current_date,
+                "wake_time": profile_clock(wake_minutes),
+                "sleep_time": profile_clock(sleep_minutes),
+                "momentum": momentum,
+                "disturbance": disturbance,
+                "sleep_medication": medication,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def ensure_profile_samples():
+    os.makedirs(PROFILE_DIR, exist_ok=True)
+    for profile_id in SAMPLE_PROFILE_IDS:
+        path = profile_data_path(profile_id)
+        if not os.path.exists(path):
+            write_records_frame(build_sample_profile(profile_id), path)
 
 def normalize_raw_records(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
@@ -392,28 +587,34 @@ def normalize_raw_records(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
-def rebuild_persisted_records(raw_df: pd.DataFrame):
+def rebuild_persisted_records(raw_df: pd.DataFrame, params: dict):
     normalized = normalize_raw_records(raw_df)
     normalized = ensure_schema_version_column(normalized)
     summary, derived = dynamics.calculate_daily_state(
         normalized,
-        config["target_wake"],
-        config["sleep_need_hours"],
-        config["lambda_d"],
-        config["alpha_up"],
-        config["alpha_down"],
-        config["recovery_k"],
-        config["recovery_saturation_tau"],
+        params["target_wake"],
+        params["sleep_need_hours"],
+        params["lambda_d"],
+        params["alpha_up"],
+        params["alpha_down"],
+        params["recovery_k"],
+        params["recovery_saturation_tau"],
+        params["attractor_p_limit"],
+        params["attractor_d_limit"],
+        ATTRACTOR_DAYS,
     )
     daily_summary = dynamics.build_daily_summary_frame(
         derived,
-        config["target_wake"],
-        config["sleep_need_hours"],
-        config["lambda_d"],
-        config["alpha_up"],
-        config["alpha_down"],
-        config["recovery_k"],
-        config["recovery_saturation_tau"],
+        params["target_wake"],
+        params["sleep_need_hours"],
+        params["lambda_d"],
+        params["alpha_up"],
+        params["alpha_down"],
+        params["recovery_k"],
+        params["recovery_saturation_tau"],
+        params["attractor_p_limit"],
+        params["attractor_d_limit"],
+        ATTRACTOR_DAYS,
     )
 
     if derived.empty:
@@ -435,14 +636,14 @@ def rebuild_persisted_records(raw_df: pd.DataFrame):
     return summary, derived, daily_summary, persisted
 
 
-def save_records_frame(df: pd.DataFrame, create_backup: bool = False):
-    if create_backup and os.path.exists(DATA_FILE):
+def save_records_frame(df: pd.DataFrame, create_backup: bool = False, path: str = DATA_FILE):
+    if create_backup and os.path.exists(path):
         os.makedirs(BACKUP_DIR, exist_ok=True)
         backup_name = datetime.now().strftime("records_backup_%Y%m%d_%H%M%S.csv")
-        shutil.copy2(DATA_FILE, os.path.join(BACKUP_DIR, backup_name))
+        shutil.copy2(path, os.path.join(BACKUP_DIR, backup_name))
         keep_recent_backups()
 
-    write_records_frame(df, DATA_FILE)
+    write_records_frame(df, path)
 
 
 def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
@@ -460,6 +661,9 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
         params["alpha_down"],
         params["recovery_k"],
         params["recovery_saturation_tau"],
+        params["attractor_p_limit"],
+        params["attractor_d_limit"],
+        ATTRACTOR_DAYS,
     )
 
     if daily_summary.empty:
@@ -469,11 +673,19 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
     daily_points_rows = []
     for rhythm_day in daily_summary["rhythm_day"].tolist():
         current_bucket = daily_view[daily_view["main_sleep_day"] == rhythm_day]
-        main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
-        if not main_sleep_bucket.empty:
-            representative = main_sleep_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+        if current_bucket.empty:
+            representative = pd.Series({
+                "rhythm_day": rhythm_day,
+                "wake_time": "N/A",
+                "momentum": pd.NA,
+                "disturbance": 0,
+            })
         else:
-            representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+            main_sleep_bucket = current_bucket[current_bucket["is_main_sleep"]]
+            if not main_sleep_bucket.empty:
+                representative = main_sleep_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
+            else:
+                representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
         point_row = representative.copy()
         for column in ["P", "D", "H", "in_attractor", "sleep_hours", "session_count"]:
             point_row[column] = summary_lookup.loc[rhythm_day, column]
@@ -483,8 +695,27 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
     return daily_view, daily_summary, daily_points
 
 
+def trajectory_segment_indices(point_count: int, max_segments: int = 200):
+    segment_count = max(point_count - 1, 0)
+    if segment_count == 0:
+        return np.array([], dtype=int)
+    if segment_count > max_segments:
+        return None
+    return np.arange(segment_count)
+
+
+def filter_trajectory_points(daily_points: pd.DataFrame, days: int):
+    if daily_points.empty:
+        return daily_points
+    filtered = daily_points.copy()
+    filtered["rhythm_day"] = pd.to_datetime(filtered["rhythm_day"], errors="coerce")
+    latest_day = filtered["rhythm_day"].max()
+    if pd.isna(latest_day):
+        return filtered
+    cutoff = latest_day - pd.Timedelta(days=days - 1)
+    return filtered[filtered["rhythm_day"] >= cutoff].sort_values("rhythm_day")
+
 def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, attractor_d_limit: float):
-    from scipy.interpolate import CubicSpline
     if daily_points.empty:
         st.info(_("info_no_pd_data"))
         return
@@ -496,55 +727,104 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
         st.info(_("info_no_pd_points"))
         return
 
-    inside_mask = (plot_frame["P"].abs() <= attractor_p_limit) & (plot_frame["D"] <= attractor_d_limit)
-
-    today = pd.Timestamp.now().normalize()
-    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds() / 86400.0
-    opacities = days_elapsed.apply(
-        lambda d: max(0.30, 0.92 * math.exp(-0.2 * max(0, d - 7)))
-    )
-
-    fig = go.Figure()
-
-    fig.add_shape(type="rect", x0=-attractor_p_limit, y0=0, x1=attractor_p_limit, y1=attractor_d_limit,
-                  fillcolor="#cfead4", opacity=0.28, layer="below", line_width=0)
-
-    fig.add_hline(y=attractor_d_limit, line=dict(color="#4a7d57", dash="dash", width=1))
-    fig.add_vline(x=-attractor_p_limit, line=dict(color="#4a7d57", dash="dash", width=1))
-    fig.add_vline(x=attractor_p_limit, line=dict(color="#4a7d57", dash="dash", width=1))
-
+    inside_mask = plot_frame["in_attractor"].astype(bool)
     p_vals = plot_frame["P"].values
     d_vals = plot_frame["D"].values
     n = len(p_vals)
+    indices = np.arange(n)
+    sizes = 6.0 + 4.0 * (indices / max(n - 1, 1))
 
-    if n >= 3:
-        seg_dists = np.sqrt(np.diff(p_vals) ** 2 + np.diff(d_vals) ** 2)
-        t_norm = np.zeros(n)
-        t_norm[1:] = np.cumsum(seg_dists)
-        if t_norm[-1] > 1e-9:
-            t_norm = t_norm / t_norm[-1]
-            t_high = np.linspace(0, 1, (n - 1) * 15 + 1)
-            cs_p = CubicSpline(t_norm, p_vals, bc_type="natural")
-            cs_d = CubicSpline(t_norm, d_vals, bc_type="natural")
-            p_smooth = cs_p(t_high)
-            d_smooth = cs_d(t_high)
-            fig.add_trace(go.Scatter(
-                x=p_smooth, y=d_smooth, mode="lines",
-                line=dict(color="#556270", width=2), opacity=0.7,
-                showlegend=False, hoverinfo="skip"
-            ))
-        else:
-            fig.add_trace(go.Scatter(
-                x=p_vals, y=d_vals, mode="lines",
-                line=dict(color="#556270", width=2, shape="spline", smoothing=1.3),
-                opacity=0.7, showlegend=False, hoverinfo="skip"
-            ))
-    elif n == 2:
+    today = pd.Timestamp.now().normalize()
+    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds().to_numpy() / 86400.0
+    opacities = np.maximum(0.30, 0.92 * np.exp(-0.2 * np.maximum(0, days_elapsed - 7)))
+
+
+    max_p = max(float(np.abs(p_vals).max()), attractor_p_limit, 3.0)
+    x_pad = max_p * 1.15
+    max_d = max(float(d_vals.max()), attractor_d_limit, 8.0)
+    y_pad = max_d * 1.15
+
+    fig = go.Figure()
+
+    fig.add_shape(type="rect", x0=attractor_p_limit, y0=0, x1=x_pad, y1=attractor_d_limit,
+                  fillcolor="#fff3cd", opacity=0.07, layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=-x_pad, y0=0, x1=-attractor_p_limit, y1=attractor_d_limit,
+                  fillcolor="#d1ecf1", opacity=0.07, layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=-attractor_p_limit, y0=attractor_d_limit, x1=attractor_p_limit, y1=y_pad,
+                  fillcolor="#f8d7da", opacity=0.07, layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=attractor_p_limit, y0=attractor_d_limit, x1=x_pad, y1=y_pad,
+                  fillcolor="#f5c6cb", opacity=0.07, layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=-x_pad, y0=attractor_d_limit, x1=-attractor_p_limit, y1=y_pad,
+                  fillcolor="#f5c6cb", opacity=0.07, layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=-attractor_p_limit, y0=0, x1=attractor_p_limit, y1=attractor_d_limit,
+                  fillcolor="#cfead4", opacity=0.35, layer="below",
+                  line=dict(color="#4a7d57", dash="dash", width=1.5))
+
+    zone_labels = [
+        (0, attractor_d_limit * 0.5, "Attractor"),
+        ((attractor_p_limit + x_pad) / 2.0, attractor_d_limit * 0.5, "Phase Delay"),
+        ((-x_pad - attractor_p_limit) / 2.0, attractor_d_limit * 0.5, "Phase Advance"),
+        (0, (attractor_d_limit + y_pad) / 2.0, "Acute Debt"),
+        ((attractor_p_limit + x_pad) / 2.0, (attractor_d_limit + y_pad) / 2.0, "Compound"),
+        ((-x_pad - attractor_p_limit) / 2.0, (attractor_d_limit + y_pad) / 2.0, "Compound"),
+    ]
+    for zx, zy, ztxt in zone_labels:
+        fig.add_annotation(
+            x=zx, y=zy, text=ztxt, showarrow=False,
+            font=dict(size=10, color="#666666"), opacity=0.8,
+        )
+
+    segment_indices = trajectory_segment_indices(n)
+    if segment_indices is None:
         fig.add_trace(go.Scatter(
-            x=p_vals, y=d_vals, mode="lines",
-            line=dict(color="#556270", width=2, shape="spline", smoothing=1.3),
-            opacity=0.7, showlegend=False, hoverinfo="skip"
+            x=p_vals,
+            y=d_vals,
+            mode="lines",
+            line=dict(color="#718096", width=1.5),
+            showlegend=False,
+            hoverinfo="skip",
         ))
+    else:
+        for i in segment_indices:
+            alpha = 0.15 + 0.65 * (i / max(n - 2, 1))
+            fig.add_trace(go.Scatter(
+                x=[p_vals[i], p_vals[i + 1]],
+                y=[d_vals[i], d_vals[i + 1]],
+                mode="lines",
+                line=dict(color=f"rgba(85,98,112,{alpha:.4f})", width=1.5),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+
+    tail = plot_frame.tail(14)
+    fig.add_trace(go.Scatter(
+        x=tail["P"].values,
+        y=tail["D"].values,
+        mode="lines",
+        line=dict(color="#556270", width=2.5),
+        showlegend=False,
+        hoverinfo="skip",
+        name="recent",
+    ))
+
+    arrow_count = min(5, n - 1)
+    for i in range(n - 1 - arrow_count, n - 1):
+        fig.add_annotation(
+            x=p_vals[i + 1],
+            y=d_vals[i + 1],
+            ax=p_vals[i],
+            ay=d_vals[i],
+            xref="x",
+            yref="y",
+            axref="x",
+            ayref="y",
+            arrowhead=2,
+            arrowsize=1.0,
+            arrowwidth=1.5,
+            arrowcolor="rgba(85,98,112,0.85)",
+            showarrow=True,
+            text="",
+        )
 
     tooltip_cols = ["H", "wake_time", "sleep_hours", "momentum", "disturbance"]
     common_hover = (
@@ -554,25 +834,48 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
         "Disturbance: %{customdata[4]}<br>"
     )
 
-    outside = plot_frame[~inside_mask]
-    if not outside.empty:
+    outside_mask = (~inside_mask).values
+    if np.any(outside_mask):
+        outside = plot_frame[~inside_mask]
         fig.add_trace(go.Scatter(
-            x=outside["P"], y=outside["D"], mode="markers",
-            marker=dict(color="#d1495b", size=8,
-                        opacity=opacities[~inside_mask.values].tolist()),
-            name="Outside attractor",
+            x=outside["P"],
+            y=outside["D"],
+            mode="markers",
+            marker=dict(
+                symbol="circle-open",
+                size=sizes[outside_mask],
+                color=indices[outside_mask],
+                colorscale="Blues",
+                cmin=0,
+                cmax=max(n - 1, 1),
+                showscale=False,
+                opacity=opacities[outside_mask].tolist(),
+                line=dict(width=1.5),
+            ),
+            name="Outside attractor (○)",
             hovertemplate=common_hover + "Attractor: No<extra></extra>",
             text=outside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=outside[tooltip_cols].to_numpy(),
         ))
 
-    inside = plot_frame[inside_mask]
-    if not inside.empty:
+    inside_indices_mask = inside_mask.values
+    if np.any(inside_indices_mask):
+        inside = plot_frame[inside_mask]
         fig.add_trace(go.Scatter(
-            x=inside["P"], y=inside["D"], mode="markers",
-            marker=dict(color="#2a9d5b", size=8,
-                        opacity=opacities[inside_mask.values].tolist()),
-            name="Inside attractor",
+            x=inside["P"],
+            y=inside["D"],
+            mode="markers",
+            marker=dict(
+                symbol="circle",
+                size=sizes[inside_indices_mask],
+                color=indices[inside_indices_mask],
+                colorscale="Blues",
+                cmin=0,
+                cmax=max(n - 1, 1),
+                showscale=False,
+                opacity=opacities[inside_indices_mask].tolist(),
+            ),
+            name="In attractor (●)",
             hovertemplate=common_hover + "Attractor: Yes<extra></extra>",
             text=inside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=inside[tooltip_cols].to_numpy(),
@@ -581,9 +884,16 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     latest = plot_frame.iloc[-1]
     latest_status = "Yes" if inside_mask.iloc[-1] else "No"
     fig.add_trace(go.Scatter(
-        x=[latest["P"]], y=[latest["D"]], mode="markers",
-        marker=dict(color="#ffb703", size=15, line=dict(color="#1f2937", width=1),
-                     symbol="circle", opacity=0.85),
+        x=[latest["P"]],
+        y=[latest["D"]],
+        mode="markers",
+        marker=dict(
+            color="#ffb703",
+            size=15,
+            line=dict(color="#1f2937", width=1.5),
+            symbol="circle",
+            opacity=0.95,
+        ),
         name="Current state",
         hovertemplate=common_hover + f"Attractor: {latest_status}<extra></extra>",
         text=[latest["rhythm_day"].strftime("%Y-%m-%d")],
@@ -599,8 +909,170 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
         height=500,
         margin=dict(l=50, r=20, t=50, b=50),
     )
-    fig.update_xaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1)
-    fig.update_yaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1)
+    fig.update_xaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1, range=[-x_pad, x_pad])
+    fig.update_yaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1, range=[0, y_pad])
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, attractor_d_limit: float):
+    if daily_points.empty:
+        st.info(_("info_no_pd_data"))
+        return
+
+    plot_frame = daily_points.copy().sort_values("rhythm_day")
+    plot_frame["rhythm_day"] = pd.to_datetime(plot_frame["rhythm_day"], errors="coerce")
+    plot_frame = plot_frame.dropna(subset=["P", "D", "rhythm_day"])
+    if plot_frame.empty:
+        st.info(_("info_no_pd_points"))
+        return
+
+    inside_mask = plot_frame["in_attractor"].astype(bool)
+    theta_vals = plot_frame["P"].values * 15.0
+    r_vals = plot_frame["D"].values
+    n = len(theta_vals)
+    indices = np.arange(n)
+    sizes = 6.0 + 4.0 * (indices / max(n - 1, 1))
+
+    today = pd.Timestamp.now().normalize()
+    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds().to_numpy() / 86400.0
+    opacities = np.maximum(0.30, 0.92 * np.exp(-0.2 * np.maximum(0, days_elapsed - 7)))
+    fig = go.Figure()
+
+    attractor_theta = np.linspace(-attractor_p_limit * 15.0, attractor_p_limit * 15.0, 40)
+    attractor_r = np.full_like(attractor_theta, attractor_d_limit)
+    attractor_theta = np.concatenate([attractor_theta, attractor_theta[::-1]])
+    attractor_r = np.concatenate([attractor_r, np.zeros_like(attractor_theta[:40])])
+    fig.add_trace(go.Scatterpolar(
+        theta=attractor_theta.tolist(), r=attractor_r.tolist(),
+        fill="toself", fillcolor="#cfead4", opacity=0.35,
+        line=dict(color="#4a7d57", dash="dash", width=1.5), showlegend=False, hoverinfo="skip",
+    ))
+
+    segment_indices = trajectory_segment_indices(n)
+    if segment_indices is None:
+        fig.add_trace(go.Scatterpolar(
+            theta=theta_vals,
+            r=r_vals,
+            mode="lines",
+            line=dict(color="#718096", width=1.5),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+    else:
+        for i in segment_indices:
+            alpha = 0.15 + 0.65 * (i / max(n - 2, 1))
+            fig.add_trace(go.Scatterpolar(
+                theta=[theta_vals[i], theta_vals[i + 1]],
+                r=[r_vals[i], r_vals[i + 1]],
+                mode="lines",
+                line=dict(color=f"rgba(85,98,112,{alpha:.4f})", width=1.5),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+
+    tail = plot_frame.tail(14)
+    fig.add_trace(go.Scatterpolar(
+        theta=tail["P"].values * 15.0,
+        r=tail["D"].values,
+        mode="lines",
+        line=dict(color="#556270", width=2.5),
+        showlegend=False,
+        hoverinfo="skip",
+        name="recent",
+    ))
+
+    tooltip_cols = ["P", "H", "wake_time", "sleep_hours", "momentum", "disturbance"]
+    common_hover = (
+        "<b>%{text}</b><br>P: %{customdata[0]:.2f} h<br>D: %{r:.2f} h<br>"
+        "H: %{customdata[1]:.3f}<br>Wake: %{customdata[2]}<br>"
+        "Sleep: %{customdata[3]:.1f} h<br>Momentum: %{customdata[4]}<br>"
+        "Disturbance: %{customdata[5]}<br>"
+    )
+
+    outside_mask = (~inside_mask).values
+    if np.any(outside_mask):
+        outside = plot_frame[~inside_mask]
+        fig.add_trace(go.Scatterpolar(
+            theta=outside["P"].values * 15.0,
+            r=outside["D"].values,
+            mode="markers",
+            marker=dict(
+                symbol="circle-open",
+                size=sizes[outside_mask],
+                color=indices[outside_mask],
+                colorscale="Blues",
+                cmin=0,
+                cmax=max(n - 1, 1),
+                showscale=False,
+                opacity=opacities[outside_mask].tolist(),
+                line=dict(width=1.5),
+            ),
+            name="Outside attractor (○)",
+            hovertemplate=common_hover + "Attractor: No<extra></extra>",
+            text=outside["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=outside[tooltip_cols].to_numpy(),
+        ))
+
+    inside_indices_mask = inside_mask.values
+    if np.any(inside_indices_mask):
+        inside = plot_frame[inside_mask]
+        fig.add_trace(go.Scatterpolar(
+            theta=inside["P"].values * 15.0,
+            r=inside["D"].values,
+            mode="markers",
+            marker=dict(
+                symbol="circle",
+                size=sizes[inside_indices_mask],
+                color=indices[inside_indices_mask],
+                colorscale="Blues",
+                cmin=0,
+                cmax=max(n - 1, 1),
+                showscale=False,
+                opacity=opacities[inside_indices_mask].tolist(),
+            ),
+            name="In attractor (●)",
+            hovertemplate=common_hover + "Attractor: Yes<extra></extra>",
+            text=inside["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=inside[tooltip_cols].to_numpy(),
+        ))
+
+    latest = plot_frame.iloc[-1]
+    latest_status = "Yes" if inside_mask.iloc[-1] else "No"
+    fig.add_trace(go.Scatterpolar(
+        theta=[latest["P"] * 15.0],
+        r=[latest["D"]],
+        mode="markers",
+        marker=dict(
+            color="#ffb703",
+            size=15,
+            line=dict(color="#1f2937", width=1.5),
+            symbol="circle",
+            opacity=0.95,
+        ),
+        name="Current state",
+        hovertemplate=common_hover + f"Attractor: {latest_status}<extra></extra>",
+        text=[latest["rhythm_day"].strftime("%Y-%m-%d")],
+        customdata=latest[tooltip_cols].to_numpy().reshape(1, -1),
+    ))
+
+    fig.update_layout(
+        title="P-D Polar Phase Space Trajectory",
+        showlegend=True,
+        hovermode="closest",
+        height=500,
+        margin=dict(l=80, r=80, t=50, b=80),
+        uirevision="constant",
+        polar=dict(
+            angularaxis=dict(
+                rotation=90,
+                direction="clockwise",
+                tickmode="array",
+                tickvals=[-180, -135, -90, -45, 0, 45, 90, 135, 180],
+                ticktext=["-12h", "-9h", "-6h", "-3h", "0h", "+3h", "+6h", "+9h", "+12h"],
+            ),
+            radialaxis=dict(autorange=True, rangemode="tozero"),
+        ),
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -612,22 +1084,33 @@ def add_attractor_status_label(is_inside: bool):
         st.error(label)
 
 
-def diagnose_attractor_state(p, d):
+def diagnose_attractor_state(p, d, p_limit, d_limit):
     if p is None or (isinstance(p, float) and math.isnan(p)):
         return "diagnosis_insufficient", "#9ca3af"
-    if abs(p) <= 1 and d <= 2:
+    if abs(p) < p_limit and d < d_limit:
         return "diagnosis_locked", "#2a9d5b"
-    if p > 1 and d > 2:
+    if p >= p_limit and d >= d_limit:
         return "diagnosis_jetlag", "#d1495b"
-    if p < -1 and d > 2:
+    if p <= -p_limit and d >= d_limit:
         return "diagnosis_deprivation", "#d1495b"
-    if p < -1 and d <= 2:
+    if p <= -p_limit and d < d_limit:
         return "diagnosis_advance", "#e9c46a"
-    if p > 1 and d <= 2:
+    if p >= p_limit and d < d_limit:
         return "diagnosis_drift", "#e9c46a"
     return "diagnosis_unknown", "#9ca3af"
 
 
+def build_rhythm_observation(p, d, h, p_limit, d_limit):
+    if p is None or pd.isna(p) or d is None or pd.isna(d):
+        return _("observation_insufficient")
+    diagnosis_key, _diagnosis_color = diagnose_attractor_state(p, d, p_limit, d_limit)
+    diagnosis_name = diagnosis_key.removeprefix("diagnosis_")
+    return _(
+        f"observation_{diagnosis_name}",
+        p=f"{float(p):.2f}",
+        d=f"{float(d):.2f}",
+        h=f"{float(h):.3f}",
+    )
 def check_convergence(summary_df):
     if len(summary_df) < 2:
         return "convergence_insufficient"
@@ -741,7 +1224,6 @@ def plot_core_trend_charts(daily_points: pd.DataFrame, range_label: str):
     st.plotly_chart(fig, use_container_width=True)
 
 
-ensure_daily_backup()
 
 st.title(_("title"))
 st.write(_("subtitle"))
@@ -769,6 +1251,7 @@ initialize_test_parameter_state()
 
 
 def get_active_parameters():
+    attractor_settings = load_ui_settings()
     return {
         "target_wake": st.session_state.get("test_target_wake", datetime.strptime(config["target_wake"], "%H:%M").time()).strftime("%H:%M"),
         "sleep_need_hours": float(st.session_state.get("test_sleep_need_hours", config["sleep_need_hours"])),
@@ -777,12 +1260,15 @@ def get_active_parameters():
         "alpha_down": float(st.session_state.get("test_alpha_down", config["alpha_down"])),
         "recovery_k": float(st.session_state.get("test_recovery_k", config["recovery_k"])),
         "recovery_saturation_tau": float(st.session_state.get("test_recovery_saturation_tau", config["recovery_saturation_tau"])),
+        "attractor_p_limit": attractor_settings["attractor_p_limit"],
+        "attractor_d_limit": attractor_settings["attractor_d_limit"],
+        "target_utc_offset": attractor_settings["target_utc_offset"],
     }
 
 
-active_params = get_active_parameters()
-records_frame = load_records_frame()
-daily_view, daily_summary, daily_points = get_daily_state_frames(records_frame, active_params)
+ensure_profile_samples()
+ui_settings = load_ui_settings()
+profile_labels = {profile_id: _(f"profile_{profile_id}") for profile_id in PROFILE_IDS}
 
 with st.sidebar:
     st.subheader("Language / 语言")
@@ -799,10 +1285,52 @@ with st.sidebar:
         st.session_state.lang = selected_lang
         st.rerun()
 
+    st.subheader(_("profile_selector"))
+    selected_profile_id = st.selectbox(
+        _("profile_selector"),
+        options=list(PROFILE_IDS),
+        index=PROFILE_IDS.index(ui_settings["profile_id"]),
+        format_func=profile_labels.__getitem__,
+    )
+    is_sample_profile = selected_profile_id in SAMPLE_PROFILE_IDS
+    if is_sample_profile:
+        st.caption(_("profile_read_only"))
+
     st.subheader(_("attractor_settings"))
-    attractor_p_limit = st.number_input(_("attractor_p_limit"), min_value=0.0, max_value=12.0, value=1.0, step=0.1)
-    attractor_d_limit = st.number_input(_("attractor_d_limit"), min_value=0.0, max_value=24.0, value=5.0, step=0.1)
+    attractor_p_limit = st.number_input(
+        _("attractor_p_limit"), min_value=0.1, max_value=12.0,
+        value=ui_settings["attractor_p_limit"], step=0.1,
+    )
+    attractor_d_limit = st.number_input(
+        _("attractor_d_limit"), min_value=0.1, max_value=24.0,
+        value=ui_settings["attractor_d_limit"], step=0.1,
+    )
+    target_utc_offset = st.number_input(
+        _("target_utc_offset"), min_value=-12.0, max_value=14.0,
+        value=ui_settings["target_utc_offset"], step=0.25,
+        help=_("target_utc_offset_help"),
+    )
     st.caption(_("attractor_heuristic"))
+    st.markdown("[{}](https://github.com/Hyperbolica-dev/MDRM)".format(_("copyright")))
+
+if (
+    attractor_p_limit != ui_settings["attractor_p_limit"]
+    or attractor_d_limit != ui_settings["attractor_d_limit"]
+    or target_utc_offset != ui_settings["target_utc_offset"]
+    or selected_profile_id != ui_settings["profile_id"]
+):
+    save_ui_settings(attractor_p_limit, attractor_d_limit, target_utc_offset, selected_profile_id)
+
+active_data_file = profile_data_path(selected_profile_id)
+if not is_sample_profile:
+    ensure_daily_backup(active_data_file)
+
+active_params = get_active_parameters()
+active_params["attractor_p_limit"] = attractor_p_limit
+active_params["attractor_d_limit"] = attractor_d_limit
+active_params["target_utc_offset"] = target_utc_offset
+records_frame = load_records_frame(active_data_file)
+daily_view, daily_summary, daily_points = get_daily_state_frames(records_frame, active_params)
 
 st.subheader(_("dashboard_title"))
 if daily_summary.empty:
@@ -810,28 +1338,122 @@ if daily_summary.empty:
 else:
     observer = daily_summary.iloc[-1].to_dict()
 
-dashboard_col1, dashboard_col2, dashboard_col3, dashboard_col4 = st.columns(4)
+biological_utc_offset = dynamics.estimate_biological_utc_offset(
+    daily_summary["P"].tolist() if not daily_summary.empty else [],
+    target_utc_offset,
+)
+dashboard_col1, dashboard_col2, dashboard_col3 = st.columns(3)
 with dashboard_col1:
     p_val = observer.get("P")
-    p_display = f"{p_val:.2f} h" if p_val is not None else "N/A"
+    p_display = f"{p_val:.2f} h" if pd.notna(p_val) else "N/A"
     st.metric(_("metric_p"), p_display)
 with dashboard_col2:
     st.metric(_("metric_d"), f"{float(observer.get('D', 0.0)):.2f} h")
 with dashboard_col3:
     st.metric(_("metric_h"), f"{float(observer.get('H', 1.0)):.3f}")
+dashboard_col4, dashboard_col5 = st.columns(2)
 with dashboard_col4:
     status_label = _("label_inside") if int(observer.get("in_attractor", 0)) == 1 else _("label_outside")
     st.metric(_("metric_attractor"), status_label)
+with dashboard_col5:
+    st.metric(_("metric_biological_utc"), format_utc_offset(biological_utc_offset))
 
 add_attractor_status_label(bool(observer.get("in_attractor", 0)))
+st.subheader(_("observation_title"))
+observation_p = observer.get("P") if not daily_summary.empty else None
+st.info(
+    build_rhythm_observation(
+        observation_p,
+        observer.get("D"),
+        observer.get("H"),
+        attractor_p_limit,
+        attractor_d_limit,
+    )
+)
 
+st.subheader(_("live_title"))
+st.caption(_("live_caption"))
+last_wake = daily_view["wake_end_dt"].max() if not daily_view.empty else None
+target_local_time = (
+    datetime.now(timezone.utc) + timedelta(hours=target_utc_offset)
+).replace(tzinfo=None)
+live_state = dynamics.calculate_live_state(
+    last_wake,
+    target_local_time,
+    active_params["target_wake"],
+    active_params["sleep_need_hours"],
+    float(observer.get("D", 0.0)),
+)
+if live_state is None:
+    st.info(_("live_no_data"))
+else:
+    live_col1, live_col2 = st.columns(2)
+    with live_col1:
+        st.metric(_("live_current_time"), live_state["current_time"].strftime("%Y-%m-%d %H:%M"))
+    with live_col2:
+        st.metric(_("live_awake"), f"{live_state['assumed_awake_hours']:.1f} h")
+    live_col3, live_col4 = st.columns(2)
+    with live_col3:
+        st.metric(_("live_missed_sleep"), f"{live_state['missed_sleep_hours']:.1f} h")
+    with live_col4:
+        st.metric(_("live_projected_debt"), f"{live_state['projected_debt']:.1f} h")
+
+if not daily_points.empty:
+    latest_point = daily_points.sort_values("rhythm_day").iloc[-1]
+    p_val = latest_point.get("P")
+    wake_val = latest_point.get("wake_time")
+    sleep_val = latest_point.get("sleep_hours")
+    if pd.notna(p_val) and wake_val and sleep_val and sleep_val > 0:
+        cbt_min = dynamics.estimate_cbt_min(str(wake_val), float(sleep_val))
+        deadband = 0.5
+        st.markdown("---")
+        lc1, lc2 = st.columns(2)
+        def _fmt(h):
+            h24 = h + 24 if h < 0 else h
+            hh = int(h24)
+            mm = int(round((h24 - hh) * 60))
+            if mm == 60:
+                hh += 1
+                mm = 0
+            return f"{hh % 24:02d}:{mm:02d}"
+        lc1.metric(_("cbt_min"), _fmt(cbt_min), help=_("cbt_min_help"))
+        if not dynamics.can_recommend_light(p_val):
+            lc2.warning(_("light_uncertain"))
+            st.info(f"**{_('non_light_title')}**\n\n{_('non_light_guidance')}")
+        elif abs(p_val) > deadband:
+            scale = min(1.0, (abs(p_val) - deadband) / 2.0)
+            offset = 3.0 * scale
+            light_hour = cbt_min + offset if p_val > 0 else cbt_min - offset
+            lc2.metric(_("light_window"), f"{_fmt(light_hour - 0.5)} - {_fmt(light_hour + 0.5)}", help=_("light_window_help"))
+        else:
+            lc2.success(_("light_deadband"))
+    else:
+        st.info(_("light_no_data"))
 if daily_points.empty:
     st.info(_("info_no_records"))
 else:
     st.caption(_("caption_trajectory"))
-    draw_state_trajectory(daily_points, attractor_p_limit, attractor_d_limit)
+    trajectory_ranges = {"7D": 7, "14D": 14, "30D": 30}
+    selected_trajectory_range = st.radio(
+        _("trajectory_range"),
+        list(trajectory_ranges),
+        index=1,
+        horizontal=True,
+    )
+    trajectory_points = filter_trajectory_points(
+        daily_points,
+        trajectory_ranges[selected_trajectory_range],
+    )
+    use_polar = st.checkbox(_("polar_toggle"), value=True)
+    if use_polar:
+        st.caption(_("caption_polar_trajectory"))
+        draw_polar_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
+    else:
+        draw_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
 
-    diag_label_key, diag_color = diagnose_attractor_state(observer.get("P"), observer.get("D"))
+    diag_label_key, diag_color = diagnose_attractor_state(
+        observer.get("P"), observer.get("D"), attractor_p_limit, attractor_d_limit
+    )
     conv_key = check_convergence(daily_summary)
 
     st.markdown("---")
@@ -931,14 +1553,14 @@ with st.form("daily_entry"):
         disturbance = st.checkbox(_("form_disturbance"), value=False)
         sleep_medication = st.checkbox(_("form_medication"), value=False)
     
-    submitted = st.form_submit_button(_("form_submit"))
+    submitted = st.form_submit_button(_("form_submit"), disabled=is_sample_profile)
 
 if submitted:
     if not TIME_PATTERN.match(sleep_time) or not TIME_PATTERN.match(wake_time):
         st.error("Time must be in HH:MM format")
         st.stop()
 
-    df = load_records_frame()
+    df = load_records_frame(active_data_file)
 
     new_record = pd.DataFrame([{
         "schema_version": CURRENT_SCHEMA_VERSION,
@@ -956,26 +1578,11 @@ if submitted:
 
     df = pd.concat([df, new_record], ignore_index=True)
 
-    summary, derived = dynamics.calculate_daily_state(
-        df,
-        active_params['target_wake'],
-        active_params['sleep_need_hours'],
-        active_params['lambda_d'],
-        active_params['alpha_up'],
-        active_params['alpha_down'],
-        active_params['recovery_k'],
-        active_params['recovery_saturation_tau'],
-    )
-
-    df.loc[df.index[-1], "P"] = summary["P"]
-    df.loc[df.index[-1], "D"] = summary["D"]
-    df.loc[df.index[-1], "H"] = summary["H"]
-    df.loc[df.index[-1], "in_attractor"] = summary["in_attractor"]
-
-    save_records_frame(df, create_backup=False)
+    summary, derived, daily_summary, persisted = rebuild_persisted_records(df, active_params)
+    save_records_frame(persisted, create_backup=False, path=active_data_file)
     
     st.success(_("submit_success"))
-    p_str = f"{summary['P']:.2f}" if summary.get('P') is not None else "N/A"
+    p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
     st.write(
         _("submit_state",
           day=summary['rhythm_day'],
@@ -1027,7 +1634,7 @@ else:
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
-        disabled=["schema_version", "P", "D", "H", "in_attractor"],
+        disabled=True if is_sample_profile else ["schema_version", "P", "D", "H", "in_attractor"],
         column_config={
             "_del": st.column_config.CheckboxColumn(_("del_col"), help=_("del_help")),
             "date": st.column_config.DateColumn("date"),
@@ -1039,13 +1646,13 @@ else:
         },
     )
 
-    if st.button(_("save_button"), type="primary"):
+    if st.button(_("save_button"), type="primary", disabled=is_sample_profile):
         try:
             cleaned_df = edited_df.loc[~edited_df["_del"].fillna(False)].copy()
             cleaned_df = cleaned_df[["schema_version"] + RAW_COLUMNS]
-            summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df)
-            save_records_frame(persisted, create_backup=True)
-            p_str = f"{summary['P']:.2f}" if summary.get('P') is not None else "N/A"
+            summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df, active_params)
+            save_records_frame(persisted, create_backup=True, path=active_data_file)
+            p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
             st.success(
                 _("save_ok",
                   day=summary['rhythm_day'],
@@ -1064,8 +1671,9 @@ with st.expander(_("import_title"), expanded=False):
         try:
             imported_df = pd.read_csv(uploaded_file)
             validated_import = validate_import_frame(imported_df)
-            if st.button(_("import_button"), type="primary"):
-                save_records_frame(validated_import[PREFERRED_COLUMNS], create_backup=True)
+            if st.button(_("import_button"), type="primary", disabled=is_sample_profile):
+                _, _, _, persisted = rebuild_persisted_records(validated_import, active_params)
+                save_records_frame(persisted, create_backup=True, path=active_data_file)
                 st.success(_("import_success"))
                 st.rerun()
         except Exception as exc:
