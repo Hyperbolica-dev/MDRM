@@ -2,6 +2,22 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
+## [v0.5.4] - Unreleased
+
+### Added
+
+- Disturbance markers and recovery-duration reporting in P-D trajectories.
+- Habit-observation cards for wake consistency, attractor lock streak, disturbance count, and H trend.
+- Phase-space markers distinguish daily target membership from formal consecutive-day attractor lock.
+- Versioned intervention persistence that keeps recommendations separate from explicit execution reports.
+- Circular chronological transition features, persistence baselines, Gaussian-process forecasts, and walk-forward validation.
+- Experimental shadow-controller status panel with uncertainty, action-support gating, and executed-intervention logging.
+
+### Changed
+
+- Cartesian P-D remains the operational default; the polar seam view remains optional and advanced.
+- Controller eligibility now requires predictive validation and identifiable executed-action support instead of geometric P-D ranking.
+
 ## [v0.5.3] - 2026-08-28
 
 ### Added
