@@ -129,10 +129,15 @@ def build_daily_summary_frame(
     d_prev = 0.0
     h_prev = 1.0
     qualifying_days = 0
+    pending_disturbance_day = None
 
     for rhythm_day in distinct_days:
         current_bucket = ordered[ordered["main_sleep_day"] == rhythm_day]
         total_sleep = float(current_bucket["sleep_hours"].sum())
+        disturbance_t = int(
+            not current_bucket.empty
+            and current_bucket["disturbance"].fillna(0).astype(bool).any()
+        )
         if current_bucket.empty or total_sleep <= 0:
             p_t = None
             d_t = d_prev + sleep_need
@@ -153,6 +158,13 @@ def build_daily_summary_frame(
             qualifying_days = 0
         in_attr = qualifying_days >= attractor_days
 
+        if disturbance_t:
+            pending_disturbance_day = rhythm_day
+        recovery_days = None
+        if pending_disturbance_day is not None and in_attr:
+            recovery_days = (rhythm_day - pending_disturbance_day).days
+            pending_disturbance_day = None
+
         summary_rows.append(
             {
                 "rhythm_day": rhythm_day,
@@ -160,6 +172,8 @@ def build_daily_summary_frame(
                 "D": round(d_t, 2),
                 "H": round(h_t, 3),
                 "in_attractor": int(in_attr),
+                "disturbance": disturbance_t,
+                "recovery_days": recovery_days,
                 "sleep_hours": round(total_sleep, 2),
                 "session_count": int(len(current_bucket)),
             }
@@ -168,7 +182,17 @@ def build_daily_summary_frame(
         d_prev = d_t
         h_prev = h_t
 
-    return pd.DataFrame(summary_rows)
+    summary_frame = pd.DataFrame(summary_rows)
+    completed_recoveries = summary_frame[summary_frame["recovery_days"].notna()]
+    for recovery_index, recovery_row in completed_recoveries.iterrows():
+        prior_rows = summary_frame.loc[:recovery_index - 1]
+        prior_disturbances = prior_rows[prior_rows["disturbance"].astype(bool)]
+        if prior_disturbances.empty:
+            continue
+        disturbance_index = prior_disturbances.index[-1]
+        summary_frame.loc[disturbance_index, "recovery_days"] = recovery_row["recovery_days"]
+        summary_frame.loc[recovery_index, "recovery_days"] = None
+    return summary_frame
 
 
 def calculate_phase(wake_actual_str, wake_target_str, sleep_need, total_sleep):
