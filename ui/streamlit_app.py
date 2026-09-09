@@ -15,6 +15,10 @@ from plotly.subplots import make_subplots
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from model import dynamics
+from model.empirical_dynamics import system_identification_report
+from model.interventions import append_intervention, empty_intervention_frame, load_interventions
+from model.learning_data import build_daily_observation_frame
+from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, latest_plottable_is_current
 dynamics = importlib.reload(dynamics)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
@@ -62,7 +66,7 @@ L = {
         "label_inside": "Inside Attractor",
         "label_outside": "Outside Attractor",
         "info_no_records": "No records yet. Use the daily entry form below to start the observer.",
-        "caption_trajectory": "Zone shading shows intervention regions. Line opacity and point color (light→dark = old→recent) encode time. Last 14 days drawn as solid line. Arrows show last 5 steps of direction. Gold ring = current state.",
+        "caption_trajectory": "Green = one-day target zone; formal lock still requires 7 consecutive qualifying days. Point color (gray→blue) shows time, the arrow shows the latest step, and gold marks the latest plottable state.",
         "charts_title": "Core Trend Charts",
         "time_range": "Time range",
         "test_panel_title": "Test Panel",
@@ -106,29 +110,28 @@ L = {
         "chart_habit": "Habit Strength H",
         "chart_date": "Date",
         "chart_title": "Core Trend Charts ({range})",
-        "diagnosis_insufficient": "Insufficient Data",
-        "diagnosis_locked": "Locked",
-        "diagnosis_jetlag": "Social Jetlag",
-        "diagnosis_deprivation": "Acute Deprivation",
-        "diagnosis_advance": "Phase Advance",
-        "diagnosis_drift": "Rhythm Drift",
-        "diagnosis_unknown": "Unknown",
-        "converging": "Converging to Attractor",
-        "diverging": "Diverging",
-        "convergence_insufficient": "Insufficient Data",
-        "guide_title": "P-D Phase Space & Attractor Guide",
+        "diagnosis_insufficient": "Insufficient data",
+        "diagnosis_locked": "Inside today's target",
+        "diagnosis_jetlag": "Phase delay + sleep debt",
+        "diagnosis_deprivation": "Phase advance + sleep debt",
+        "diagnosis_advance": "Phase advance",
+        "diagnosis_drift": "Phase delay",
+        "diagnosis_unknown": "Mixed state",
+        "converging": "Moving toward target zone",
+        "diverging": "Moving away from target zone",
+        "convergence_stable": "Target-zone distance unchanged",
+        "convergence_insufficient": "Insufficient movement data",
+        "guide_title": "How to read the P-D state space",
         "guide_content": (
-            "- **X-axis (P)**: Mid-sleep phase offset. $P=M_{actual}-M_{target}$, where $M=T_{wake}-SleepDuration/2$.\n"
-            "- **Y-axis (D)**: Cumulative sleep debt (integrated fatigue).\n"
-            "- **Green zone**: User-defined attractor (default $|P|<1$h, $D<5$h).\n"
-            "- **Fading**: Older points fade (opacity $\\propto e^{-0.2\\Delta t}$).\n"
-            "- **Gold ring**: Current state.\n\n"
-            "**Formal status**: Seven consecutive rhythm days inside the selected strict P/D thresholds.\n\n"
-            "**Quadrant 1** ($P>1, D>2$): Social Jetlag.\n"
-            "**Quadrant 2** ($P<-1, D>2$): Acute Deprivation.\n"
-            "**Quadrant 3** ($P<-1, D\\le 2$): Phase Advance.\n"
-            "**Quadrant 4** ($P>1, D\\le 2$): Rhythm Drift, $H$ decaying.\n\n"
-            "**Polar view**: Angle = $P$, radius = $D$. $0$h at top 12-o'clock, clockwise = delay zone.\n\n"
+            "- **X-axis (P)**: Mid-sleep phase offset. Negative = phase advance; positive = phase delay.\n"
+            "- **Y-axis (D)**: Cumulative sleep debt. Lower is better.\n"
+            "- **Green rectangle**: A one-day qualifying state, defined by strict $|P|<P_{limit}$ and $D<D_{limit}$ thresholds.\n"
+            "- **Filled/open point**: Qualifying day / day outside the target zone.\n"
+            "- **Gray→blue**: Older→newer observations. The arrow isolates the latest transition.\n"
+            "- **Gold marker**: Latest state with a defined phase estimate.\n\n"
+            "**Formal lock differs from position**: `IN ATTRACTOR` requires 7 consecutive qualifying rhythm days. A point can be inside the green zone before formal lock is achieved.\n\n"
+            "**Intervention regions**: left/right indicate phase advance/delay; upward indicates more sleep debt. The two upper corners combine phase displacement with elevated debt.\n\n"
+            "**Circular view**: Angle = $P$, radius = $D$. Use it to inspect the $-12h/+12h$ seam; use the Cartesian default to compare threshold margins.\n\n"
             "**Light therapy**: CBT_min estimate anchors the light window. Expose to bright light >10000 lux for 30 min within the window to shift $P$ toward attractor."
         ),
         "cbt_min": "Estimated CBT_min",
@@ -150,15 +153,97 @@ L = {
         "copyright": "© 2026 Hyperbolica-dev · GitHub",
         "observation_title": "Rhythm observation",
         "observation_insufficient": "Observation inconclusive: valid phase data is insufficient.",
-        "observation_locked": "Stable lock: P={p}h and D={d}h remain within the selected attractor thresholds. Keep the current wake anchor.",
-        "observation_jetlag": "Combined delay and sleep debt: stabilize wake time and recover sleep before pursuing a stronger phase shift.",
-        "observation_deprivation": "Sleep debt is dominant: prioritize sufficient sleep opportunity and a fixed wake time before phase correction.",
+        "observation_locked": "Today's P={p}h and D={d}h qualify under the selected thresholds. Formal lock still depends on the consecutive-day streak.",
+        "observation_jetlag": "Phase delay and sleep debt are both elevated: stabilize wake time and recover sleep before pursuing a stronger phase shift.",
+        "observation_deprivation": "Phase advance and sleep debt are both elevated: prioritize sufficient sleep opportunity and a fixed wake time before phase correction.",
         "observation_advance": "Phase advance is dominant: keep the wake time consistent and avoid extending the schedule earlier until the phase returns toward target.",
         "observation_drift": "Phase delay is dominant while debt remains controlled: preserve the wake anchor and use the light window consistently.",
         "observation_unknown": "The current pattern is mixed: keep wake time stable and collect more consecutive records before changing intervention timing.",
+        "habit_observation_title": "Habit observation",
+        "habit_wake_consistency": "7-day wake consistency",
+        "habit_lock_streak": "Current lock streak",
+        "habit_disturbances": "Disturbances in view",
+        "habit_trend": "H trend",
+        "habit_consistent": "Consistent",
+        "habit_variable": "Variable",
+        "habit_rising": "Rising",
+        "habit_falling": "Falling",
+        "habit_stable": "Stable",
+        "recovery_title": "Disturbance recovery",
+        "recovery_completed": "Latest disturbance recovered in {days} days.",
+        "recovery_pending": "Recovery is not complete for the latest disturbance.",
+        "recovery_none": "No disturbance recovery interval is available.",
         "non_light_title": "Light paused: phase is uncertain",
-        "polar_toggle": "Polar view",
-        "caption_polar_trajectory": "Angle = phase offset P, radius = sleep debt D. 0h at 12-o'clock, clockwise = delay zone. Line opacity and point size encode recency.",
+        "polar_toggle": "Circular phase view (advanced)",
+        "caption_polar_trajectory": "Angle = P and radius = D. This view preserves the -12h/+12h seam but makes rectangular target margins harder to compare.",
+        "phase_margin": "Phase threshold margin",
+        "debt_margin": "Debt threshold margin",
+        "qualifying_streak": "Qualifying streak",
+        "streak_help": "Formal lock begins after 7 consecutive qualifying rhythm days.",
+        "margin_help": "Positive margin is inside the selected threshold; negative margin is the amount outside.",
+        "latest_step": "Latest step: phase {phase_direction} by {phase_delta}h; sleep debt {debt_direction} by {debt_delta}h.",
+        "toward_target": "moved toward target",
+        "away_from_target": "moved away from target",
+        "phase_unchanged": "was unchanged",
+        "debt_reduced": "decreased",
+        "debt_increased": "increased",
+        "debt_unchanged": "was unchanged",
+        "current_unplottable": "The current rhythm day ({day}) has no defined phase. The chart marks {latest_day} as the latest plottable state, not the current state.",
+        "chart_phase_title": "P-D State-Space Trajectory",
+        "chart_p_axis": "P phase (h): advance ← 0 → delay",
+        "chart_d_axis": "D sleep debt (h): lower ↓",
+        "chart_polar_title": "Circular P-D State-Space Trajectory",
+        "zone_target": "Target",
+        "zone_delay": "Delay",
+        "zone_advance": "Advance",
+        "zone_debt": "Debt",
+        "zone_compound": "Both",
+        "legend_outside": "Outside target (○)",
+        "legend_qualifying": "Qualifying (●)",
+        "legend_disturbance": "Disturbance (*)",
+        "legend_current": "Current",
+        "legend_latest_valid": "Latest plottable",
+        "empirical_title": "Data-driven Controller (Experimental)",
+        "empirical_caption": "Shadow-mode system identification. P is derived from sleep timing, not a direct physiological phase measurement.",
+        "empirical_data_status": "1. Data status",
+        "empirical_transitions": "Usable one-step transitions",
+        "empirical_interventions": "Executed interventions",
+        "empirical_action_types": "Observed action types",
+        "empirical_validation": "Chronological validation",
+        "empirical_yes": "Available",
+        "empirical_no": "Unavailable",
+        "empirical_none": "None",
+        "empirical_model_status": "2. Model status",
+        "empirical_variable": "Variable",
+        "empirical_persistence": "Persistence error",
+        "empirical_learned": "GP error",
+        "empirical_beats": "Beats persistence",
+        "empirical_forecast": "3. Current one-step forecast",
+        "empirical_forecast_caption": "Central estimate ± predictive standard deviation. This is observational forecasting, not an intervention effect.",
+        "empirical_forecast_unavailable": "Current forecast unavailable: {reason}",
+        "empirical_stage": "4. System identification status",
+        "empirical_stage_system_identification": "SYSTEM IDENTIFICATION / DATA COLLECTION",
+        "empirical_stage_validated_predictor": "VALIDATED PREDICTOR (OBSERVATIONAL)",
+        "empirical_stage_advisory_controller": "ADVISORY CONTROLLER ELIGIBLE",
+        "empirical_action_warning": "Action effects are not identifiable: executed intervention variation is insufficient. Candidate actions are hidden.",
+        "empirical_candidates": "5. Candidate actions",
+        "empirical_candidates_hidden": "No candidate ranking is shown until action-conditional prediction beats persistence and the candidate is inside historical execution support.",
+        "empirical_log_title": "Record an executed intervention",
+        "empirical_log_caption": "Records explicit user-reported execution only. Displayed recommendations are never treated as completed actions.",
+        "empirical_action_type": "Action type",
+        "empirical_action_day": "Rhythm day",
+        "empirical_actual_time": "Actual time",
+        "empirical_duration": "Duration minutes (optional)",
+        "empirical_notes": "Notes (optional)",
+        "empirical_save_action": "Save executed intervention",
+        "empirical_action_saved": "Executed intervention saved.",
+        "empirical_action_error": "Intervention was not saved: {error}",
+        "empirical_beats_yes": "Yes",
+        "empirical_beats_no": "No",
+        "empirical_predicted_p": "Predicted P",
+        "empirical_predicted_d": "Predicted D",
+        "empirical_predicted_h": "Predicted H",
+        "empirical_current_state": "Current state: P={p}, D={d}, H={h}",
     },
     "cn": {
         "lang_name": "中文",
@@ -200,7 +285,7 @@ L = {
         "label_inside": "处于吸引域内",
         "label_outside": "处于吸引域外",
         "info_no_records": "尚无记录，请使用下方每日录入表单启动观察器。",
-        "caption_trajectory": "区域着色标注干预分区。线条透明度和点颜色（浅→深 = 旧→近）编码时间。最近14天轨迹以实线显示。箭头显示最近5步的方向。金环 = 当前状态。",
+        "caption_trajectory": "绿色区域 = 单日达标区；正式锁定仍需连续 7 个达标日。点颜色（灰→蓝）表示时间，箭头表示最近一步，金色表示最近可绘制状态。",
         "charts_title": "核心趋势图",
         "time_range": "时间范围",
         "test_panel_title": "测试台",
@@ -245,28 +330,27 @@ L = {
         "chart_date": "日期",
         "chart_title": "核心趋势图（{range}）",
         "diagnosis_insufficient": "数据不足",
-        "diagnosis_locked": "稳态锁定",
-        "diagnosis_jetlag": "社交时差",
-        "diagnosis_deprivation": "应激剥夺",
+        "diagnosis_locked": "今日进入目标区",
+        "diagnosis_jetlag": "相位延迟 + 睡眠债",
+        "diagnosis_deprivation": "相位前移 + 睡眠债",
         "diagnosis_advance": "相位前移",
-        "diagnosis_drift": "无疲劳漂移",
-        "diagnosis_unknown": "未知",
-        "converging": "收敛中",
-        "diverging": "离心漂移中",
-        "convergence_insufficient": "数据不足",
-        "guide_title": "P-D 相图与吸引子阅读指南",
+        "diagnosis_drift": "相位延迟",
+        "diagnosis_unknown": "混合状态",
+        "converging": "正向目标区靠近",
+        "diverging": "正远离目标区",
+        "convergence_stable": "与目标区距离未变",
+        "convergence_insufficient": "移动数据不足",
+        "guide_title": "如何阅读 P-D 状态空间",
         "guide_content": (
-            "- **X 轴 (P)**：中睡相位偏移。$P=M_{actual}-M_{target}$，其中 $M=T_{wake}-SleepDuration/2$。\n"
-            "- **Y 轴 (D)**：累积睡眠债（积分疲劳）。\n"
-            "- **绿色区域**：用户定义的吸引域（默认 $|P|<1$h, $D<5$h）。\n"
-            "- **颜色渐变**：越旧的数据点越淡（透明度衰减 $\\propto e^{-0.2\\Delta t}$）。\n"
-            "- **金环**：当前状态。\n\n"
-            "**正式状态**：连续七个节律日严格处于所选 P/D 阈值内。\n\n"
-            "**Quadrant 1** ($P>1, D>2$)：社交时差，晚睡且债务高。\n"
-            "**Quadrant 2** ($P<-1, D>2$)：严重睡眠剥夺。\n"
-            "**Quadrant 3** ($P<-1, D\\le 2$)：相位前移，但睡眠充足。\n"
-            "**Quadrant 4** ($P>1, D\\le 2$)：漂移期，$H$ 正在衰减。\n\n"
-            "**极坐标视图**：角度 = $P$，半径 = $D$。$0$h 在正上方 12 点钟方向，顺时针为延迟区。\n\n"
+            "- **X 轴 (P)**：中睡相位偏移。负值 = 相位前移，正值 = 相位延迟。\n"
+            "- **Y 轴 (D)**：累积睡眠债，越低越好。\n"
+            "- **绿色矩形**：单日达标区，严格满足 $|P|<P_{limit}$ 且 $D<D_{limit}$。\n"
+            "- **实心/空心点**：单日达标 / 位于目标区外。\n"
+            "- **灰→蓝**：旧→新观测；箭头单独标出最近一次转移。\n"
+            "- **金色标记**：最近一个具有有效相位估算的状态。\n\n"
+            "**位置不等于正式锁定**：`IN ATTRACTOR` 需要连续 7 个节律日达标。轨迹点可能已进入绿色区域，但尚未形成正式锁定。\n\n"
+            "**干预分区**：左/右分别表示相位前移/延迟，向上表示睡眠债增加；上方两角表示相位偏移与睡眠债叠加。\n\n"
+            "**环形视图**：角度 = $P$，半径 = $D$。它适合观察 $-12h/+12h$ 接缝；比较阈值余量时应使用默认直角坐标图。\n\n"
             "**光疗指导**：CBT_min 估算值锚定光疗窗口。在窗口内接触 >10000 lux 强光 30 分钟可将 $P$ 拉回吸引域。"
         ),
         "cbt_min": "估算核心体温最低点 (CBT_min)",
@@ -285,18 +369,100 @@ L = {
         "profile_debt": "示例：睡眠债累积",
         "profile_advance": "示例：相位前移",
         "profile_read_only": "示例档案为只读。",
+        "copyright": "© 2026 Hyperbolica-dev · GitHub",
         "observation_title": "节律观察结论",
         "observation_insufficient": "结论暂不明确：有效相位数据不足。",
-        "observation_locked": "稳定锁定：P={p}h、D={d}h 均处于当前吸引域阈值内。继续保持当前起床锚点。",
-        "observation_jetlag": "相位延迟与睡眠债同时突出：先固定起床时间并补足睡眠，再进行更强的相位调整。",
-        "observation_deprivation": "睡眠债是主要问题：先保证充足睡眠机会和固定起床时间，再处理相位校正。",
-        "profile_read_only": "示例档案为只读。",
-        "copyright": "© 2026 Hyperbolica-dev · GitHub",
+        "observation_locked": "今日 P={p}h、D={d}h 达到所选阈值；正式锁定仍取决于连续达标日数。",
+        "observation_jetlag": "相位延迟与睡眠债均偏高：先固定起床时间并补足睡眠，再进行更强的相位调整。",
+        "observation_deprivation": "相位前移与睡眠债均偏高：先保证充足睡眠机会和固定起床时间，再处理相位校正。",
+        "observation_advance": "相位前移较突出：保持起床时间一致，在相位回归目标前避免进一步提前作息。",
         "observation_drift": "相位延迟较突出但睡眠债受控：保持起床锚点，并按光疗窗口持续执行。",
         "observation_unknown": "当前模式较混合：保持起床时间稳定，连续记录更多数据后再改变干预时点。",
+        "habit_observation_title": "习惯观察",
+        "habit_wake_consistency": "近 7 天起床稳定性",
+        "habit_lock_streak": "当前锁定连续天数",
+        "habit_disturbances": "当前范围内的扰动次数",
+        "habit_trend": "H 趋势",
+        "habit_consistent": "稳定",
+        "habit_variable": "波动",
+        "habit_rising": "上升",
+        "habit_falling": "下降",
+        "habit_stable": "平稳",
+        "recovery_title": "扰动恢复",
+        "recovery_completed": "最近一次扰动在 {days} 天内恢复。",
+        "recovery_pending": "最近一次扰动尚未完成恢复。",
+        "recovery_none": "没有可用的扰动恢复区间。",
         "non_light_title": "光疗暂停：相位不确定",
-        "polar_toggle": "极坐标视图",
-        "caption_polar_trajectory": "角度 = 相位偏移 P，半径 = 睡眠债 D。12 点钟为 0h，顺时针为延迟区。线条透明度和点大小编码时间远近。",
+        "polar_toggle": "环形相位视图（进阶）",
+        "caption_polar_trajectory": "角度 = P，半径 = D。该视图保留 -12h/+12h 接缝，但不适合比较矩形目标区的阈值余量。",
+        "phase_margin": "相位阈值余量",
+        "debt_margin": "睡眠债阈值余量",
+        "qualifying_streak": "连续达标日",
+        "streak_help": "连续 7 个节律日达标后，系统才进入正式锁定。",
+        "margin_help": "余量为正表示位于所选阈值内；为负表示超出阈值的量。",
+        "latest_step": "最近一步：相位{phase_direction} {phase_delta}h；睡眠债{debt_direction} {debt_delta}h。",
+        "toward_target": "向目标靠近",
+        "away_from_target": "远离目标",
+        "phase_unchanged": "未变化",
+        "debt_reduced": "下降",
+        "debt_increased": "上升",
+        "debt_unchanged": "未变化",
+        "current_unplottable": "当前节律日（{day}）没有有效相位估算。图中金色标记是最近可绘制状态 {latest_day}，并非当前状态。",
+        "chart_phase_title": "P-D 状态空间轨迹",
+        "chart_p_axis": "相位 P（小时）：前移 ← 0 → 延迟",
+        "chart_d_axis": "睡眠债 D（小时）：越低越好",
+        "chart_polar_title": "环形 P-D 状态空间轨迹",
+        "zone_target": "目标",
+        "zone_delay": "延迟",
+        "zone_advance": "前移",
+        "zone_debt": "睡眠债",
+        "zone_compound": "叠加",
+        "legend_outside": "目标区外（○）",
+        "legend_qualifying": "单日达标（●）",
+        "legend_disturbance": "扰动（*）",
+        "legend_current": "当前",
+        "legend_latest_valid": "最近可绘制",
+        "empirical_title": "数据驱动控制器（实验）",
+        "empirical_caption": "影子模式系统识别。P 来自睡眠时序推导，并非直接生理相位测量。",
+        "empirical_data_status": "1. 数据状态",
+        "empirical_transitions": "可用一步转移",
+        "empirical_interventions": "已执行干预",
+        "empirical_action_types": "已观测行动类型",
+        "empirical_validation": "时序验证",
+        "empirical_yes": "可用",
+        "empirical_no": "不可用",
+        "empirical_none": "无",
+        "empirical_model_status": "2. 模型状态",
+        "empirical_variable": "变量",
+        "empirical_persistence": "持久性误差",
+        "empirical_learned": "GP 误差",
+        "empirical_beats": "优于持久性",
+        "empirical_forecast": "3. 当前一步预测",
+        "empirical_forecast_caption": "中心估计 ± 预测标准差。这是观测预测，不是干预效应。",
+        "empirical_forecast_unavailable": "当前预测不可用：{reason}",
+        "empirical_stage": "4. 系统识别状态",
+        "empirical_stage_system_identification": "系统识别 / 数据收集",
+        "empirical_stage_validated_predictor": "已验证预测器（观测性）",
+        "empirical_stage_advisory_controller": "具备咨询控制器资格",
+        "empirical_action_warning": "行动效应不可识别：实际执行干预缺少变化。候选行动已隐藏。",
+        "empirical_candidates": "5. 候选行动",
+        "empirical_candidates_hidden": "仅当行动条件模型优于持久性基线，且候选行动位于历史执行支持范围内时才显示候选比较。",
+        "empirical_log_title": "记录已执行干预",
+        "empirical_log_caption": "仅记录用户明确报告的实际执行。界面显示的建议绝不视为已完成行动。",
+        "empirical_action_type": "行动类型",
+        "empirical_action_day": "节律日",
+        "empirical_actual_time": "实际时间",
+        "empirical_duration": "持续分钟数（可选）",
+        "empirical_notes": "备注（可选）",
+        "empirical_save_action": "保存已执行干预",
+        "empirical_action_saved": "已保存执行干预。",
+        "empirical_action_error": "干预未保存：{error}",
+        "empirical_beats_yes": "是",
+        "empirical_beats_no": "否",
+        "empirical_predicted_p": "预测 P",
+        "empirical_predicted_d": "预测 D",
+        "empirical_predicted_h": "预测 H",
+        "empirical_current_state": "当前状态：P={p}，D={d}，H={h}",
     },
 }
 
@@ -687,21 +853,20 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
             else:
                 representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
         point_row = representative.copy()
-        for column in ["P", "D", "H", "in_attractor", "sleep_hours", "session_count"]:
+        for column in ["P", "D", "H", "in_attractor", "disturbance", "recovery_days", "sleep_hours", "session_count"]:
             point_row[column] = summary_lookup.loc[rhythm_day, column]
         daily_points_rows.append(point_row)
 
     daily_points = pd.DataFrame(daily_points_rows).sort_values("rhythm_day")
     return daily_view, daily_summary, daily_points
+@st.cache_data(show_spinner=False)
+def build_empirical_status_report(daily_summary_frame, daily_view_frame, intervention_frame):
+    daily_observations = build_daily_observation_frame(daily_summary_frame, daily_view_frame)
+    return system_identification_report(daily_observations, intervention_frame)
 
 
-def trajectory_segment_indices(point_count: int, max_segments: int = 200):
-    segment_count = max(point_count - 1, 0)
-    if segment_count == 0:
-        return np.array([], dtype=int)
-    if segment_count > max_segments:
-        return None
-    return np.arange(segment_count)
+
+
 
 
 def filter_trajectory_points(daily_points: pd.DataFrame, days: int):
@@ -714,36 +879,114 @@ def filter_trajectory_points(daily_points: pd.DataFrame, days: int):
         return filtered
     cutoff = latest_day - pd.Timedelta(days=days - 1)
     return filtered[filtered["rhythm_day"] >= cutoff].sort_values("rhythm_day")
+def build_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limit: float):
+    if daily_points.empty:
+        return None
+    ordered = daily_points.copy().sort_values("rhythm_day")
+    ordered["rhythm_day"] = pd.to_datetime(ordered["rhythm_day"], errors="coerce")
+    ordered["P"] = pd.to_numeric(ordered["P"], errors="coerce")
+    ordered["D"] = pd.to_numeric(ordered["D"], errors="coerce")
+    ordered = ordered.dropna(subset=["rhythm_day"])
+    if ordered.empty:
+        return None
+    qualifying = ordered["P"].notna() & ordered["D"].notna() & (ordered["P"].abs() < p_limit) & (ordered["D"] < d_limit)
+    streak = 0
+    for is_qualifying in qualifying.iloc[::-1]:
+        if not bool(is_qualifying):
+            break
+        streak += 1
+    valid = ordered.dropna(subset=["P", "D"])
+    latest = ordered.iloc[-1]
+    context = {
+        "current_day": latest["rhythm_day"],
+        "current_plottable": pd.notna(latest["P"]) and pd.notna(latest["D"]),
+        "latest_valid_day": valid.iloc[-1]["rhythm_day"] if not valid.empty else None,
+        "streak": streak,
+        "phase_margin": None,
+        "debt_margin": None,
+        "phase_progress": None,
+        "debt_progress": None,
+    }
+    if not context["current_plottable"]:
+        return context
+    context["phase_margin"] = p_limit - abs(float(latest["P"]))
+    context["debt_margin"] = d_limit - float(latest["D"])
+    if len(ordered) >= 2:
+        previous = ordered.iloc[-2]
+        if pd.notna(previous["P"]) and pd.notna(previous["D"]):
+            context["phase_progress"] = abs(float(previous["P"])) - abs(float(latest["P"]))
+            context["debt_progress"] = float(previous["D"]) - float(latest["D"])
+    return context
+
+
+def render_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limit: float):
+    context = build_phase_space_context(daily_points, p_limit, d_limit)
+    if context is None:
+        return
+    if not context["current_plottable"]:
+        latest_day = context["latest_valid_day"]
+        if latest_day is not None:
+            st.warning(_(
+                "current_unplottable",
+                day=context["current_day"].strftime("%Y-%m-%d"),
+                latest_day=latest_day.strftime("%Y-%m-%d"),
+            ))
+        return
+    phase_col, debt_col, streak_col = st.columns(3)
+    phase_col.metric(_("phase_margin"), f"{context['phase_margin']:+.2f} h", help=_("margin_help"))
+    debt_col.metric(_("debt_margin"), f"{context['debt_margin']:+.2f} h", help=_("margin_help"))
+    streak_col.metric(_("qualifying_streak"), f"{context['streak']} d", help=_("streak_help"))
+    if context["phase_progress"] is None or context["debt_progress"] is None:
+        return
+    phase_progress = context["phase_progress"]
+    debt_progress = context["debt_progress"]
+    if math.isclose(phase_progress, 0.0, abs_tol=0.005):
+        phase_direction = _("phase_unchanged")
+    elif phase_progress > 0:
+        phase_direction = _("toward_target")
+    else:
+        phase_direction = _("away_from_target")
+    if math.isclose(debt_progress, 0.0, abs_tol=0.005):
+        debt_direction = _("debt_unchanged")
+    elif debt_progress > 0:
+        debt_direction = _("debt_reduced")
+    else:
+        debt_direction = _("debt_increased")
+    st.caption(_(
+        "latest_step",
+        phase_direction=phase_direction,
+        phase_delta=f"{abs(phase_progress):.2f}",
+        debt_direction=debt_direction,
+        debt_delta=f"{abs(debt_progress):.2f}",
+    ))
+
+
 
 def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, attractor_d_limit: float):
     if daily_points.empty:
         st.info(_("info_no_pd_data"))
         return
 
-    plot_frame = daily_points.copy().sort_values("rhythm_day")
-    plot_frame["rhythm_day"] = pd.to_datetime(plot_frame["rhythm_day"], errors="coerce")
-    plot_frame = plot_frame.dropna(subset=["P", "D", "rhythm_day"])
+    ordered = daily_points.copy().sort_values("rhythm_day")
+    ordered["rhythm_day"] = pd.to_datetime(ordered["rhythm_day"], errors="coerce")
+    latest_day = ordered["rhythm_day"].max()
+    plot_frame = ordered.dropna(subset=["P", "D", "rhythm_day"]).copy()
     if plot_frame.empty:
         st.info(_("info_no_pd_points"))
         return
 
-    inside_mask = plot_frame["in_attractor"].astype(bool)
-    p_vals = plot_frame["P"].values
-    d_vals = plot_frame["D"].values
-    n = len(p_vals)
+    qualifying_mask = daily_target_mask(plot_frame, attractor_p_limit, attractor_d_limit)
+    p_vals = plot_frame["P"].to_numpy()
+    d_vals = plot_frame["D"].to_numpy()
+    n = len(plot_frame)
     indices = np.arange(n)
-    sizes = 6.0 + 4.0 * (indices / max(n - 1, 1))
-
-    today = pd.Timestamp.now().normalize()
-    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds().to_numpy() / 86400.0
-    opacities = np.maximum(0.30, 0.92 * np.exp(-0.2 * np.maximum(0, days_elapsed - 7)))
-
+    latest_is_current = latest_plottable_is_current(ordered, plot_frame)
+    colorscale = [[0.0, "#9ca3af"], [1.0, "#2563eb"]]
 
     max_p = max(float(np.abs(p_vals).max()), attractor_p_limit, 3.0)
     x_pad = max_p * 1.15
     max_d = max(float(d_vals.max()), attractor_d_limit, 8.0)
     y_pad = max_d * 1.15
-
     fig = go.Figure()
 
     fig.add_shape(type="rect", x0=attractor_p_limit, y0=0, x1=x_pad, y1=attractor_d_limit,
@@ -761,69 +1004,42 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
                   line=dict(color="#4a7d57", dash="dash", width=1.5))
 
     zone_labels = [
-        (0, attractor_d_limit * 0.5, "Attractor"),
-        ((attractor_p_limit + x_pad) / 2.0, attractor_d_limit * 0.5, "Phase Delay"),
-        ((-x_pad - attractor_p_limit) / 2.0, attractor_d_limit * 0.5, "Phase Advance"),
-        (0, (attractor_d_limit + y_pad) / 2.0, "Acute Debt"),
-        ((attractor_p_limit + x_pad) / 2.0, (attractor_d_limit + y_pad) / 2.0, "Compound"),
-        ((-x_pad - attractor_p_limit) / 2.0, (attractor_d_limit + y_pad) / 2.0, "Compound"),
+        (0, attractor_d_limit * 0.5, _("zone_target")),
+        ((attractor_p_limit + x_pad) / 2.0, attractor_d_limit * 0.5, _("zone_delay")),
+        ((-x_pad - attractor_p_limit) / 2.0, attractor_d_limit * 0.5, _("zone_advance")),
+        (0, (attractor_d_limit + y_pad) / 2.0, _("zone_debt")),
+        ((attractor_p_limit + x_pad) / 2.0, (attractor_d_limit + y_pad) / 2.0, _("zone_compound")),
+        ((-x_pad - attractor_p_limit) / 2.0, (attractor_d_limit + y_pad) / 2.0, _("zone_compound")),
     ]
-    for zx, zy, ztxt in zone_labels:
+    for zone_x, zone_y, zone_text in zone_labels:
         fig.add_annotation(
-            x=zx, y=zy, text=ztxt, showarrow=False,
+            x=zone_x, y=zone_y, text=zone_text, showarrow=False,
             font=dict(size=10, color="#666666"), opacity=0.8,
         )
 
-    segment_indices = trajectory_segment_indices(n)
-    if segment_indices is None:
-        fig.add_trace(go.Scatter(
-            x=p_vals,
-            y=d_vals,
-            mode="lines",
-            line=dict(color="#718096", width=1.5),
-            showlegend=False,
-            hoverinfo="skip",
-        ))
-    else:
-        for i in segment_indices:
-            alpha = 0.15 + 0.65 * (i / max(n - 2, 1))
-            fig.add_trace(go.Scatter(
-                x=[p_vals[i], p_vals[i + 1]],
-                y=[d_vals[i], d_vals[i + 1]],
-                mode="lines",
-                line=dict(color=f"rgba(85,98,112,{alpha:.4f})", width=1.5),
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-
-    tail = plot_frame.tail(14)
     fig.add_trace(go.Scatter(
-        x=tail["P"].values,
-        y=tail["D"].values,
+        x=p_vals,
+        y=d_vals,
         mode="lines",
-        line=dict(color="#556270", width=2.5),
+        line=dict(color="#9ca3af", width=1.5),
         showlegend=False,
         hoverinfo="skip",
-        name="recent",
     ))
-
-    arrow_count = min(5, n - 1)
-    for i in range(n - 1 - arrow_count, n - 1):
+    tail = plot_frame.tail(7)
+    fig.add_trace(go.Scatter(
+        x=tail["P"],
+        y=tail["D"],
+        mode="lines",
+        line=dict(color="#4b5563", width=2.5),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+    if n >= 2:
         fig.add_annotation(
-            x=p_vals[i + 1],
-            y=d_vals[i + 1],
-            ax=p_vals[i],
-            ay=d_vals[i],
-            xref="x",
-            yref="y",
-            axref="x",
-            ayref="y",
-            arrowhead=2,
-            arrowsize=1.0,
-            arrowwidth=1.5,
-            arrowcolor="rgba(85,98,112,0.85)",
-            showarrow=True,
-            text="",
+            x=p_vals[-1], y=d_vals[-1], ax=p_vals[-2], ay=d_vals[-2],
+            xref="x", yref="y", axref="x", ayref="y",
+            arrowhead=2, arrowsize=1.0, arrowwidth=1.8,
+            arrowcolor="#374151", showarrow=True, text="",
         )
 
     tooltip_cols = ["H", "wake_time", "sleep_hours", "momentum", "disturbance"]
@@ -831,87 +1047,105 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
         "<b>%{text}</b><br>P: %{x:.2f} h<br>D: %{y:.2f} h<br>"
         "H: %{customdata[0]:.3f}<br>Wake: %{customdata[1]}<br>"
         "Sleep: %{customdata[2]:.1f} h<br>Momentum: %{customdata[3]}<br>"
-        "Disturbance: %{customdata[4]}<br>"
+        "Disturbance: %{customdata[4]}<extra></extra>"
     )
 
-    outside_mask = (~inside_mask).values
+    outside_mask = (~qualifying_mask).to_numpy()
     if np.any(outside_mask):
-        outside = plot_frame[~inside_mask]
+        outside = plot_frame[~qualifying_mask]
         fig.add_trace(go.Scatter(
             x=outside["P"],
             y=outside["D"],
             mode="markers",
             marker=dict(
                 symbol="circle-open",
-                size=sizes[outside_mask],
+                size=9,
                 color=indices[outside_mask],
-                colorscale="Blues",
+                colorscale=colorscale,
                 cmin=0,
                 cmax=max(n - 1, 1),
                 showscale=False,
-                opacity=opacities[outside_mask].tolist(),
+                opacity=0.9,
                 line=dict(width=1.5),
             ),
-            name="Outside attractor (○)",
-            hovertemplate=common_hover + "Attractor: No<extra></extra>",
+            name=_("legend_outside"),
+            hovertemplate=common_hover,
             text=outside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=outside[tooltip_cols].to_numpy(),
         ))
 
-    inside_indices_mask = inside_mask.values
-    if np.any(inside_indices_mask):
-        inside = plot_frame[inside_mask]
+    qualifying_values = qualifying_mask.to_numpy()
+    if np.any(qualifying_values):
+        qualifying_points = plot_frame[qualifying_mask]
         fig.add_trace(go.Scatter(
-            x=inside["P"],
-            y=inside["D"],
+            x=qualifying_points["P"],
+            y=qualifying_points["D"],
             mode="markers",
             marker=dict(
                 symbol="circle",
-                size=sizes[inside_indices_mask],
-                color=indices[inside_indices_mask],
-                colorscale="Blues",
+                size=9,
+                color=indices[qualifying_values],
+                colorscale=colorscale,
                 cmin=0,
                 cmax=max(n - 1, 1),
                 showscale=False,
-                opacity=opacities[inside_indices_mask].tolist(),
+                opacity=0.9,
+                line=dict(color="#1f2937", width=1.0),
             ),
-            name="In attractor (●)",
-            hovertemplate=common_hover + "Attractor: Yes<extra></extra>",
-            text=inside["rhythm_day"].dt.strftime("%Y-%m-%d"),
-            customdata=inside[tooltip_cols].to_numpy(),
+            name=_("legend_qualifying"),
+            hovertemplate=common_hover,
+            text=qualifying_points["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=qualifying_points[tooltip_cols].to_numpy(),
         ))
 
+    disturbance_mask = plot_frame["disturbance"].fillna(0).astype(bool).to_numpy()
+    if np.any(disturbance_mask):
+        disturbance_points = plot_frame[disturbance_mask]
+        fig.add_trace(go.Scatter(
+            x=disturbance_points["P"],
+            y=disturbance_points["D"],
+            mode="markers",
+            marker=dict(symbol="star", size=13, color="#e76f51", line=dict(color="#7f1d1d", width=1.2)),
+            name=_("legend_disturbance"),
+            hovertemplate="<b>%{text}</b><br>Recovery: %{customdata[0]} days<extra></extra>",
+            text=disturbance_points["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=disturbance_points[["recovery_days"]].fillna("Unavailable").to_numpy(),
+        ))
+    recovery_points = plot_frame[plot_frame["recovery_days"].notna()]
+    for recovery_index, point in recovery_points.iterrows():
+        fig.add_annotation(
+            x=point["P"], y=point["D"], text=f"R={int(point['recovery_days'])}d",
+            showarrow=False, yshift=14, font=dict(size=10, color="#7f1d1d"),
+        )
+
     latest = plot_frame.iloc[-1]
-    latest_status = "Yes" if inside_mask.iloc[-1] else "No"
+    latest_name = _("legend_current") if latest_is_current else _("legend_latest_valid")
     fig.add_trace(go.Scatter(
         x=[latest["P"]],
         y=[latest["D"]],
         mode="markers",
-        marker=dict(
-            color="#ffb703",
-            size=15,
-            line=dict(color="#1f2937", width=1.5),
-            symbol="circle",
-            opacity=0.95,
-        ),
-        name="Current state",
-        hovertemplate=common_hover + f"Attractor: {latest_status}<extra></extra>",
+        marker=dict(color="#ffb703", size=15, line=dict(color="#1f2937", width=1.5), symbol="circle", opacity=0.95),
+        name=latest_name,
+        hovertemplate=common_hover,
         text=[latest["rhythm_day"].strftime("%Y-%m-%d")],
         customdata=latest[tooltip_cols].to_numpy().reshape(1, -1),
     ))
 
     fig.update_layout(
-        title="P-D Phase Space Trajectory",
-        xaxis_title="Phase Offset P (hours)",
-        yaxis_title="Sleep Debt D (hours)",
+        title=dict(text=_("chart_phase_title"), x=0.02, xanchor="left", font=dict(color="#e5e7eb", size=18)),
+        xaxis_title=_("chart_p_axis"),
+        yaxis_title=_("chart_d_axis"),
         showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="left", x=0, font=dict(size=10)),
         hovermode="closest",
-        height=500,
-        margin=dict(l=50, r=20, t=50, b=50),
+        height=580,
+        margin=dict(l=70, r=15, t=60, b=110),
     )
-    fig.update_xaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1, range=[-x_pad, x_pad])
-    fig.update_yaxes(zeroline=True, zerolinecolor="#ccc", zerolinewidth=1, range=[0, y_pad])
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_xaxes(zeroline=True, zerolinecolor="#9ca3af", zerolinewidth=1, range=[-x_pad, x_pad])
+    fig.update_yaxes(zeroline=True, zerolinecolor="#9ca3af", zerolinewidth=1, range=[0, y_pad])
+    st.plotly_chart(fig, width="stretch")
+
+
 
 
 def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, attractor_d_limit: float):
@@ -919,66 +1153,53 @@ def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: f
         st.info(_("info_no_pd_data"))
         return
 
-    plot_frame = daily_points.copy().sort_values("rhythm_day")
-    plot_frame["rhythm_day"] = pd.to_datetime(plot_frame["rhythm_day"], errors="coerce")
-    plot_frame = plot_frame.dropna(subset=["P", "D", "rhythm_day"])
+    ordered = daily_points.copy().sort_values("rhythm_day")
+    ordered["rhythm_day"] = pd.to_datetime(ordered["rhythm_day"], errors="coerce")
+    latest_day = ordered["rhythm_day"].max()
+    plot_frame = ordered.dropna(subset=["P", "D", "rhythm_day"]).copy()
     if plot_frame.empty:
         st.info(_("info_no_pd_points"))
         return
 
-    inside_mask = plot_frame["in_attractor"].astype(bool)
-    theta_vals = plot_frame["P"].values * 15.0
-    r_vals = plot_frame["D"].values
-    n = len(theta_vals)
+    qualifying_mask = daily_target_mask(plot_frame, attractor_p_limit, attractor_d_limit)
+    theta_vals = plot_frame["P"].to_numpy() * 15.0
+    radial_vals = plot_frame["D"].to_numpy()
+    n = len(plot_frame)
     indices = np.arange(n)
-    sizes = 6.0 + 4.0 * (indices / max(n - 1, 1))
-
-    today = pd.Timestamp.now().normalize()
-    days_elapsed = (today - plot_frame["rhythm_day"]).dt.total_seconds().to_numpy() / 86400.0
-    opacities = np.maximum(0.30, 0.92 * np.exp(-0.2 * np.maximum(0, days_elapsed - 7)))
+    latest_is_current = latest_plottable_is_current(ordered, plot_frame)
+    colorscale = [[0.0, "#9ca3af"], [1.0, "#2563eb"]]
     fig = go.Figure()
 
-    attractor_theta = np.linspace(-attractor_p_limit * 15.0, attractor_p_limit * 15.0, 40)
-    attractor_r = np.full_like(attractor_theta, attractor_d_limit)
-    attractor_theta = np.concatenate([attractor_theta, attractor_theta[::-1]])
-    attractor_r = np.concatenate([attractor_r, np.zeros_like(attractor_theta[:40])])
+    target_theta = np.linspace(-attractor_p_limit * 15.0, attractor_p_limit * 15.0, 40)
+    target_radius = np.full_like(target_theta, attractor_d_limit)
+    target_theta = np.concatenate([target_theta, target_theta[::-1]])
+    target_radius = np.concatenate([target_radius, np.zeros(40)])
     fig.add_trace(go.Scatterpolar(
-        theta=attractor_theta.tolist(), r=attractor_r.tolist(),
-        fill="toself", fillcolor="#cfead4", opacity=0.35,
-        line=dict(color="#4a7d57", dash="dash", width=1.5), showlegend=False, hoverinfo="skip",
-    ))
-
-    segment_indices = trajectory_segment_indices(n)
-    if segment_indices is None:
-        fig.add_trace(go.Scatterpolar(
-            theta=theta_vals,
-            r=r_vals,
-            mode="lines",
-            line=dict(color="#718096", width=1.5),
-            showlegend=False,
-            hoverinfo="skip",
-        ))
-    else:
-        for i in segment_indices:
-            alpha = 0.15 + 0.65 * (i / max(n - 2, 1))
-            fig.add_trace(go.Scatterpolar(
-                theta=[theta_vals[i], theta_vals[i + 1]],
-                r=[r_vals[i], r_vals[i + 1]],
-                mode="lines",
-                line=dict(color=f"rgba(85,98,112,{alpha:.4f})", width=1.5),
-                showlegend=False,
-                hoverinfo="skip",
-            ))
-
-    tail = plot_frame.tail(14)
-    fig.add_trace(go.Scatterpolar(
-        theta=tail["P"].values * 15.0,
-        r=tail["D"].values,
-        mode="lines",
-        line=dict(color="#556270", width=2.5),
+        theta=target_theta.tolist(),
+        r=target_radius.tolist(),
+        fill="toself",
+        fillcolor="#cfead4",
+        opacity=0.35,
+        line=dict(color="#4a7d57", dash="dash", width=1.5),
         showlegend=False,
         hoverinfo="skip",
-        name="recent",
+    ))
+    fig.add_trace(go.Scatterpolar(
+        theta=theta_vals,
+        r=radial_vals,
+        mode="lines",
+        line=dict(color="#9ca3af", width=1.5),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+    tail = plot_frame.tail(7)
+    fig.add_trace(go.Scatterpolar(
+        theta=tail["P"].to_numpy() * 15.0,
+        r=tail["D"],
+        mode="lines",
+        line=dict(color="#4b5563", width=2.5),
+        showlegend=False,
+        hoverinfo="skip",
     ))
 
     tooltip_cols = ["P", "H", "wake_time", "sleep_hours", "momentum", "disturbance"]
@@ -986,94 +1207,116 @@ def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: f
         "<b>%{text}</b><br>P: %{customdata[0]:.2f} h<br>D: %{r:.2f} h<br>"
         "H: %{customdata[1]:.3f}<br>Wake: %{customdata[2]}<br>"
         "Sleep: %{customdata[3]:.1f} h<br>Momentum: %{customdata[4]}<br>"
-        "Disturbance: %{customdata[5]}<br>"
+        "Disturbance: %{customdata[5]}<extra></extra>"
     )
 
-    outside_mask = (~inside_mask).values
+    outside_mask = (~qualifying_mask).to_numpy()
     if np.any(outside_mask):
-        outside = plot_frame[~inside_mask]
+        outside = plot_frame[~qualifying_mask]
         fig.add_trace(go.Scatterpolar(
-            theta=outside["P"].values * 15.0,
-            r=outside["D"].values,
+            theta=outside["P"].to_numpy() * 15.0,
+            r=outside["D"],
             mode="markers",
             marker=dict(
                 symbol="circle-open",
-                size=sizes[outside_mask],
+                size=9,
                 color=indices[outside_mask],
-                colorscale="Blues",
+                colorscale=colorscale,
                 cmin=0,
                 cmax=max(n - 1, 1),
                 showscale=False,
-                opacity=opacities[outside_mask].tolist(),
+                opacity=0.9,
                 line=dict(width=1.5),
             ),
-            name="Outside attractor (○)",
-            hovertemplate=common_hover + "Attractor: No<extra></extra>",
+            name=_("legend_outside"),
+            hovertemplate=common_hover,
             text=outside["rhythm_day"].dt.strftime("%Y-%m-%d"),
             customdata=outside[tooltip_cols].to_numpy(),
         ))
 
-    inside_indices_mask = inside_mask.values
-    if np.any(inside_indices_mask):
-        inside = plot_frame[inside_mask]
+    qualifying_values = qualifying_mask.to_numpy()
+    if np.any(qualifying_values):
+        qualifying_points = plot_frame[qualifying_mask]
         fig.add_trace(go.Scatterpolar(
-            theta=inside["P"].values * 15.0,
-            r=inside["D"].values,
+            theta=qualifying_points["P"].to_numpy() * 15.0,
+            r=qualifying_points["D"],
             mode="markers",
             marker=dict(
                 symbol="circle",
-                size=sizes[inside_indices_mask],
-                color=indices[inside_indices_mask],
-                colorscale="Blues",
+                size=9,
+                color=indices[qualifying_values],
+                colorscale=colorscale,
                 cmin=0,
                 cmax=max(n - 1, 1),
                 showscale=False,
-                opacity=opacities[inside_indices_mask].tolist(),
+                opacity=0.9,
+                line=dict(color="#1f2937", width=1.0),
             ),
-            name="In attractor (●)",
-            hovertemplate=common_hover + "Attractor: Yes<extra></extra>",
-            text=inside["rhythm_day"].dt.strftime("%Y-%m-%d"),
-            customdata=inside[tooltip_cols].to_numpy(),
+            name=_("legend_qualifying"),
+            hovertemplate=common_hover,
+            text=qualifying_points["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=qualifying_points[tooltip_cols].to_numpy(),
+        ))
+
+    disturbance_mask = plot_frame["disturbance"].fillna(0).astype(bool).to_numpy()
+    if np.any(disturbance_mask):
+        disturbance_points = plot_frame[disturbance_mask]
+        fig.add_trace(go.Scatterpolar(
+            theta=disturbance_points["P"].to_numpy() * 15.0,
+            r=disturbance_points["D"],
+            mode="markers",
+            marker=dict(symbol="star", size=13, color="#e76f51", line=dict(color="#7f1d1d", width=1.2)),
+            name=_("legend_disturbance"),
+            hovertemplate="<b>%{text}</b><br>Recovery: %{customdata[0]} days<extra></extra>",
+            text=disturbance_points["rhythm_day"].dt.strftime("%Y-%m-%d"),
+            customdata=disturbance_points[["recovery_days"]].fillna("Unavailable").to_numpy(),
         ))
 
     latest = plot_frame.iloc[-1]
-    latest_status = "Yes" if inside_mask.iloc[-1] else "No"
+    latest_name = _("legend_current") if latest_is_current else _("legend_latest_valid")
     fig.add_trace(go.Scatterpolar(
         theta=[latest["P"] * 15.0],
         r=[latest["D"]],
         mode="markers",
-        marker=dict(
-            color="#ffb703",
-            size=15,
-            line=dict(color="#1f2937", width=1.5),
-            symbol="circle",
-            opacity=0.95,
-        ),
-        name="Current state",
-        hovertemplate=common_hover + f"Attractor: {latest_status}<extra></extra>",
+        marker=dict(color="#ffb703", size=15, line=dict(color="#1f2937", width=1.5), symbol="circle", opacity=0.95),
+        name=latest_name,
+        hovertemplate=common_hover,
         text=[latest["rhythm_day"].strftime("%Y-%m-%d")],
         customdata=latest[tooltip_cols].to_numpy().reshape(1, -1),
     ))
 
     fig.update_layout(
-        title="P-D Polar Phase Space Trajectory",
+        title=dict(text=_("chart_polar_title"), x=0.02, xanchor="left", font=dict(color="#e5e7eb", size=18)),
         showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0, font=dict(size=10)),
         hovermode="closest",
-        height=500,
-        margin=dict(l=80, r=80, t=50, b=80),
+        height=580,
+        margin=dict(l=55, r=55, t=60, b=100),
         uirevision="constant",
         polar=dict(
+            bgcolor="rgba(0,0,0,0)",
             angularaxis=dict(
                 rotation=90,
                 direction="clockwise",
                 tickmode="array",
-                tickvals=[-180, -135, -90, -45, 0, 45, 90, 135, 180],
-                ticktext=["-12h", "-9h", "-6h", "-3h", "0h", "+3h", "+6h", "+9h", "+12h"],
+                tickvals=[0, 45, 90, 135, 180, 225, 270, 315],
+                ticktext=["0h", "+3h", "+6h", "+9h", "±12h", "-9h", "-6h", "-3h"],
+                gridcolor="#4b5563",
+                linecolor="#6b7280",
+                tickfont=dict(color="#e5e7eb"),
             ),
-            radialaxis=dict(autorange=True, rangemode="tozero"),
+            radialaxis=dict(
+                autorange=True,
+                rangemode="tozero",
+                gridcolor="#374151",
+                linecolor="#6b7280",
+                tickfont=dict(color="#d1d5db"),
+            ),
         ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
+
+
 
 
 def add_attractor_status_label(is_inside: bool):
@@ -1085,7 +1328,7 @@ def add_attractor_status_label(is_inside: bool):
 
 
 def diagnose_attractor_state(p, d, p_limit, d_limit):
-    if p is None or (isinstance(p, float) and math.isnan(p)):
+    if p is None or pd.isna(p) or d is None or pd.isna(d):
         return "diagnosis_insufficient", "#9ca3af"
     if abs(p) < p_limit and d < d_limit:
         return "diagnosis_locked", "#2a9d5b"
@@ -1111,20 +1354,87 @@ def build_rhythm_observation(p, d, h, p_limit, d_limit):
         d=f"{float(d):.2f}",
         h=f"{float(h):.3f}",
     )
-def check_convergence(summary_df):
+def build_habit_observation(daily_points: pd.DataFrame, daily_summary: pd.DataFrame, target_wake: str):
+    if daily_points.empty or daily_summary.empty:
+        return {
+            "wake": "N/A",
+            "wake_state": _("habit_variable"),
+            "lock": "0",
+            "disturbances": "0",
+            "trend": _("habit_stable"),
+            "recovery": _("recovery_none"),
+        }
+    recent_points = daily_points.sort_values("rhythm_day").tail(7)
+    wake_values = pd.to_datetime(recent_points["wake_time"], format="%H:%M", errors="coerce")
+    wake_hours = wake_values.dt.hour + wake_values.dt.minute / 60.0
+    target = datetime.strptime(target_wake, "%H:%M").hour + datetime.strptime(target_wake, "%H:%M").minute / 60.0
+    deviations = ((wake_hours - target + 12.0) % 24.0) - 12.0
+    valid_deviations = deviations.dropna()
+    mean_deviation = float(valid_deviations.abs().mean()) if not valid_deviations.empty else None
+    wake_state = _("habit_consistent") if mean_deviation is not None and mean_deviation <= 0.5 else _("habit_variable")
+    wake_display = f"{mean_deviation:.1f}h" if mean_deviation is not None else "N/A"
+    lock_streak = 0
+    for is_inside in daily_summary.sort_values("rhythm_day")["in_attractor"].iloc[::-1]:
+        if not bool(is_inside):
+            break
+        lock_streak += 1
+    disturbance_count = int(
+        daily_summary.sort_values("rhythm_day").tail(7)["disturbance"].fillna(0).astype(bool).sum()
+    )
+    recent_h = pd.to_numeric(daily_summary.sort_values("rhythm_day").tail(7)["H"], errors="coerce").dropna()
+    if len(recent_h) < 2 or abs(float(recent_h.iloc[-1] - recent_h.iloc[0])) < 0.02:
+        habit_trend = _("habit_stable")
+    elif recent_h.iloc[-1] > recent_h.iloc[0]:
+        habit_trend = _("habit_rising")
+    else:
+        habit_trend = _("habit_falling")
+    return {
+        "wake": wake_display,
+        "wake_state": wake_state,
+        "lock": str(lock_streak),
+        "disturbances": str(disturbance_count),
+        "trend": habit_trend,
+        "recovery": build_recovery_observation(daily_summary),
+    }
+
+
+def build_recovery_observation(daily_summary: pd.DataFrame):
+    if daily_summary.empty or "disturbance" not in daily_summary.columns:
+        return _("recovery_none")
+    disturbances = daily_summary[daily_summary["disturbance"].fillna(0).astype(bool)]
+    if disturbances.empty:
+        return _("recovery_none")
+    latest_disturbance_day = disturbances["rhythm_day"].max()
+    completed = daily_summary[
+        daily_summary["recovery_days"].notna()
+        & (daily_summary["rhythm_day"] >= latest_disturbance_day)
+    ]
+    if completed.empty:
+        return _("recovery_pending")
+    days = int(completed.iloc[-1]["recovery_days"])
+    return _("recovery_completed", days=days)
+
+def target_zone_distance(p, d, p_limit, d_limit):
+    phase_excess = max(abs(float(p)) - p_limit, 0.0) / p_limit
+    debt_excess = max(float(d) - d_limit, 0.0) / d_limit
+    return math.hypot(phase_excess, debt_excess)
+
+
+def check_convergence(summary_df, p_limit, d_limit):
     if len(summary_df) < 2:
         return "convergence_insufficient"
-    valid = summary_df.dropna(subset=["P", "D"])
-    if len(valid) < 2:
+    ordered = summary_df.sort_values("rhythm_day")
+    current = ordered.iloc[-1]
+    previous = ordered.iloc[-2]
+    if pd.isna(current["P"]) or pd.isna(current["D"]) or pd.isna(previous["P"]) or pd.isna(previous["D"]):
         return "convergence_insufficient"
-    curr = valid.iloc[-1]
-    prev = valid.iloc[-2]
-    d_curr = math.sqrt(curr["P"] ** 2 + curr["D"] ** 2)
-    d_prev = math.sqrt(prev["P"] ** 2 + prev["D"] ** 2)
-    if d_curr < d_prev:
+    current_distance = target_zone_distance(current["P"], current["D"], p_limit, d_limit)
+    previous_distance = target_zone_distance(previous["P"], previous["D"], p_limit, d_limit)
+    if math.isclose(current_distance, previous_distance, abs_tol=1e-9):
+        return "convergence_stable"
+    if current_distance < previous_distance:
         return "converging"
-    else:
-        return "diverging"
+    return "diverging"
 
 
 def filter_points_by_range(daily_points: pd.DataFrame, range_label: str):
@@ -1221,7 +1531,7 @@ def plot_core_trend_charts(daily_points: pd.DataFrame, range_label: str):
         height=600,
         margin=dict(l=50, r=20, t=50, b=50),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 
@@ -1370,6 +1680,18 @@ st.info(
         attractor_d_limit,
     )
 )
+habit_observation = build_habit_observation(daily_points, daily_summary, active_params["target_wake"])
+st.subheader(_("habit_observation_title"))
+habit_col1, habit_col2, habit_col3, habit_col4 = st.columns(4)
+with habit_col1:
+    st.metric(_("habit_wake_consistency"), habit_observation["wake"], habit_observation["wake_state"])
+with habit_col2:
+    st.metric(_("habit_lock_streak"), habit_observation["lock"])
+with habit_col3:
+    st.metric(_("habit_disturbances"), habit_observation["disturbances"])
+with habit_col4:
+    st.metric(_("habit_trend"), habit_observation["trend"])
+st.caption(f"{_('recovery_title')}: {habit_observation['recovery']}")
 
 st.subheader(_("live_title"))
 st.caption(_("live_caption"))
@@ -1444,7 +1766,8 @@ else:
         daily_points,
         trajectory_ranges[selected_trajectory_range],
     )
-    use_polar = st.checkbox(_("polar_toggle"), value=True)
+    render_phase_space_context(daily_points, attractor_p_limit, attractor_d_limit)
+    use_polar = st.checkbox(_("polar_toggle"), value=DEFAULT_POLAR_VIEW)
     if use_polar:
         st.caption(_("caption_polar_trajectory"))
         draw_polar_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
@@ -1454,7 +1777,7 @@ else:
     diag_label_key, diag_color = diagnose_attractor_state(
         observer.get("P"), observer.get("D"), attractor_p_limit, attractor_d_limit
     )
-    conv_key = check_convergence(daily_summary)
+    conv_key = check_convergence(daily_summary, attractor_p_limit, attractor_d_limit)
 
     st.markdown("---")
     diag_col1, diag_col2 = st.columns(2)
@@ -1479,6 +1802,96 @@ else:
 st.subheader(_("charts_title"))
 range_choice = st.selectbox(_("time_range"), ["7D", "30D", "90D", "All"], index=1)
 plot_core_trend_charts(daily_points, range_choice)
+learning_interventions = empty_intervention_frame() if is_sample_profile else load_interventions()
+with st.expander(_("empirical_title"), expanded=False):
+    st.caption(_("empirical_caption"))
+    empirical_report = build_empirical_status_report(daily_summary, daily_view, learning_interventions)
+    validation_report = empirical_report["short_history"]
+    action_report = empirical_report["action_coverage"]
+
+    st.markdown(f"**{_('empirical_data_status')}**")
+    data_col1, data_col2 = st.columns(2)
+    data_col1.metric(_("empirical_transitions"), str(empirical_report["state_only"]["usable_transitions"]))
+    data_col2.metric(_("empirical_interventions"), str(action_report["executed_interventions"]))
+    action_types = ", ".join(action_report["action_types"]) if action_report["action_types"] else _("empirical_none")
+    data_col3, data_col4 = st.columns(2)
+    data_col3.metric(_("empirical_action_types"), action_types)
+    validation_label = _("empirical_yes") if validation_report["chronological_validation_available"] else _("empirical_no")
+    data_col4.metric(_("empirical_validation"), validation_label)
+
+    st.markdown(f"**{_('empirical_model_status')}**")
+    persistence_metrics = validation_report["persistence"]
+    learned_metrics = validation_report["learned"]
+    metric_rows = []
+    for variable, metric_name in (("P", "P_circular_mae"), ("D", "D_mae"), ("H", "H_mae")):
+        persistence_error = persistence_metrics.get(metric_name)
+        learned_error = learned_metrics.get(metric_name)
+        metric_rows.append({
+            _("empirical_variable"): variable,
+            _("empirical_persistence"): f"{persistence_error:.3f}" if pd.notna(persistence_error) else "N/A",
+            _("empirical_learned"): f"{learned_error:.3f}" if pd.notna(learned_error) else "N/A",
+            _("empirical_beats"): _("empirical_beats_yes") if validation_report["learned_beats_persistence"][variable] else _("empirical_beats_no"),
+        })
+    st.dataframe(pd.DataFrame(metric_rows), width="stretch", hide_index=True)
+
+    st.markdown(f"**{_('empirical_forecast')}**")
+    forecast = empirical_report["current_forecast"]
+    if forecast["available"]:
+        forecast_col1, forecast_col2 = st.columns(2)
+        forecast_col1.metric(_("empirical_predicted_p"), f"{forecast['P_mean']:.2f} ± {forecast['P_std']:.2f} h")
+        forecast_col2.metric(_("empirical_predicted_d"), f"{forecast['D_mean']:.2f} ± {forecast['D_std']:.2f} h")
+        st.metric(_("empirical_predicted_h"), f"{forecast['H_mean']:.3f} ± {forecast['H_std']:.3f}")
+        if not daily_summary.empty:
+            latest_observed = daily_summary.iloc[-1]
+            latest_phase = f"{latest_observed['P']:.2f}" if pd.notna(latest_observed["P"]) else "N/A"
+            st.caption(_(
+                "empirical_current_state",
+                p=latest_phase,
+                d=f"{latest_observed['D']:.2f}",
+                h=f"{latest_observed['H']:.3f}",
+            ))
+        st.caption(_("empirical_forecast_caption"))
+    else:
+        st.info(_("empirical_forecast_unavailable", reason=forecast["reason"]))
+
+    st.markdown(f"**{_('empirical_stage')}**")
+    stage_key = f"empirical_stage_{empirical_report['system_stage']}"
+    st.warning(_(stage_key))
+    if not empirical_report["controller_eligible"]:
+        st.warning(_("empirical_action_warning"))
+    st.markdown(f"**{_('empirical_candidates')}**")
+    st.info(_("empirical_candidates_hidden"))
+
+    if not is_sample_profile:
+        st.markdown("---")
+        st.markdown(f"**{_('empirical_log_title')}**")
+        st.caption(_("empirical_log_caption"))
+        latest_action_day = daily_summary.iloc[-1]["rhythm_day"] if not daily_summary.empty else date.today()
+        with st.form("executed_intervention_form"):
+            action_type_input = st.text_input(_("empirical_action_type"), value="light")
+            action_day_input = st.date_input(_("empirical_action_day"), value=latest_action_day)
+            actual_time_input = st.time_input(_("empirical_actual_time"), value=datetime.now().replace(second=0, microsecond=0).time())
+            duration_input = st.text_input(_("empirical_duration"), value="")
+            notes_input = st.text_input(_("empirical_notes"), value="")
+            save_action = st.form_submit_button(_("empirical_save_action"))
+        if save_action:
+            try:
+                append_intervention({
+                    "rhythm_day": action_day_input.strftime("%Y-%m-%d"),
+                    "action_type": action_type_input,
+                    "recommended_time": "",
+                    "planned_time": "",
+                    "actual_time": actual_time_input.strftime("%H:%M"),
+                    "duration_minutes": duration_input.strip(),
+                    "executed": True,
+                    "source": "user_report",
+                    "notes": notes_input,
+                })
+                build_empirical_status_report.clear()
+                st.success(_("empirical_action_saved"))
+            except (OSError, TypeError, ValueError) as error:
+                st.error(_("empirical_action_error", error=error))
+
 
 with st.expander(_("test_panel_title"), expanded=False):
     st.caption(_("test_panel_caption"))
@@ -1618,7 +2031,7 @@ else:
                 "H_day",
                 "in_attractor_day",
             ]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1631,7 +2044,7 @@ else:
 
     edited_df = st.data_editor(
         editor_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         num_rows="fixed",
         disabled=True if is_sample_profile else ["schema_version", "P", "D", "H", "in_attractor"],
