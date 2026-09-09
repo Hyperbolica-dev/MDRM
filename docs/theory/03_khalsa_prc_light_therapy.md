@@ -100,8 +100,8 @@ $$
    - `estimate_cbt_min(wake, sleep)` — $MSM + 1.5$h, zero-friction
    - `prc_shift(cbt_min, light_hour, lux)` — continuous sine Khalsa PRC
 2. **Control law** (`scripts/simulate_control.py`): proportional + deadband, anchored to $\widehat{CBT}_{\min}$
-3. **UI integration**: Dashboard displays "today's light therapy window" $[T_{light} \pm 0.5]$h; no recording checkbox (implicit feedback via next-day $P$)
-4. **Needs empirical calibration**: $A$ lux saturation curve, $\eta$ (natural relaxation), deadband $\delta$ — requires N=1实测 data fitting
+3. **UI integration**: Dashboard displays "today's light therapy window" $[T_{light} \pm 0.5]$h as a recommendation. Explicit user-reported execution is stored separately in `data/interventions.csv`; a next-day $P$ change is not evidence of adherence.
+4. **Needs empirical calibration**: $A$ lux saturation curve, $\eta$ (natural relaxation), deadband $\delta$, and action-conditional effects require N=1 measured execution data and chronological validation.
 
 ---
 
