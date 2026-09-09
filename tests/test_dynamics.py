@@ -114,6 +114,36 @@ def test_missing_day_breaks_attractor_streak():
     assert summarize(rows).iloc[-1]["in_attractor"] == 0
 
 
+def test_disturbance_recovery_reports_reentry_duration():
+    rows = [
+        (f"2026-08-{day:02d}", "01:30", "08:30")
+        for day in [1, 2, 3, 5, 6, 7, 8, 9, 10, 11]
+    ]
+    rows.insert(3, ("2026-08-04", "03:00", "11:00"))
+    raw = records(rows)
+    raw.loc[3, "disturbance"] = 1
+    summary = build_daily_summary_frame(
+        derive_session_frame(raw, "08:30"),
+        "08:30", 7.0, 0.9, 0.98, 0.5, 0.4, 2.0, 1.0, 5.0, 7,
+    )
+    recovery = summary[summary["disturbance"] == 1].iloc[-1]
+    assert summary.loc[summary["disturbance"] == 1, "rhythm_day"].tolist() == [date(2026, 8, 4)]
+    assert recovery["rhythm_day"] == date(2026, 8, 4)
+    assert recovery["recovery_days"] == 7
+
+
+def test_disturbance_without_reentry_has_no_recovery_duration():
+    raw = records([
+        ("2026-08-01", "01:30", "08:30"),
+        ("2026-08-02", "03:00", "11:00"),
+    ])
+    raw.loc[1, "disturbance"] = 1
+    summary = build_daily_summary_frame(
+        derive_session_frame(raw, "08:30"),
+        "08:30", 7.0, 0.9, 0.98, 0.5, 0.4, 2.0, 1.0, 5.0, 7,
+    )
+    assert pd.isna(summary.iloc[-1]["recovery_days"])
+
 def test_runtime_thresholds_reclassify_full_history():
     rows = [
         (f"2026-08-{day:02d}", "02:00", "09:00")

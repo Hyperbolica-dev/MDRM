@@ -23,11 +23,11 @@ The formal attractor uses runtime thresholds with defaults $|P|<1.0$, $D<5.0$ an
 
 ## Attractor Definition (Core Model)
 
-From MRDM.md §7:
+From `docs/MRDM.md` §7:
 
 **Attractor**: When $|P| < 1$h and $D < 5$h, maintained for 7+ consecutive days, system declares `IN ATTRACTOR`.
 
-**Robustness measure**: Days required to return to `IN ATTRACTOR` after perturbation ($DIS_t=1$) — recovery time $R$.
+**Robustness measure**: Days required to return to `IN ATTRACTOR` after perturbation ($DIS_t=1$) — recovery time $R$. The runtime summary reports this as `recovery_days` on the disturbance event when re-entry is observed.
 
 ---
 
