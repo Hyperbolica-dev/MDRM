@@ -19,6 +19,7 @@ from model.empirical_dynamics import system_identification_report
 from model.interventions import append_intervention, empty_intervention_frame, load_interventions
 from model.learning_data import build_daily_observation_frame
 from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current
+from ui.phase_space_3d import build_phase_space_3d_figure
 from model.recommendations import build_recommendation_candidates
 dynamics = importlib.reload(dynamics)
 
@@ -177,6 +178,8 @@ L = {
         "non_light_title": "Light paused: phase is uncertain",
         "polar_toggle": "Circular phase view (advanced)",
         "caption_polar_trajectory": "Angle = P and radius = D. This view preserves the -12h/+12h seam but makes rectangular target margins harder to compare.",
+        "phase_3d_title": "3D Time View [Experimental]",
+        "phase_3d_caption": "X = P phase, Y = D sleep debt, Z = days from the latest observation. Older time buckets fade; drag to rotate. Cartesian remains the operational view.",
         "phase_margin": "Phase threshold margin",
         "debt_margin": "Debt threshold margin",
         "qualifying_streak": "Qualifying streak",
@@ -404,6 +407,8 @@ L = {
         "non_light_title": "光疗暂停：相位不确定",
         "polar_toggle": "环形相位视图（进阶）",
         "caption_polar_trajectory": "角度 = P，半径 = D。该视图保留 -12h/+12h 接缝，但不适合比较矩形目标区的阈值余量。",
+        "phase_3d_title": "3D 时间视图【实验】",
+        "phase_3d_caption": "X = P 相位，Y = D 睡眠债，Z = 距最新观测的天数。较早时间段逐渐淡化；可拖动旋转。Cartesian 仍是主要操作视图。",
         "phase_margin": "相位阈值余量",
         "debt_margin": "睡眠债阈值余量",
         "qualifying_streak": "连续达标日",
@@ -1772,6 +1777,13 @@ else:
     trajectory_points = filter_phase_space_points(daily_points, selected_trajectory_range)
     render_phase_space_context(daily_points, attractor_p_limit, attractor_d_limit)
     use_polar = st.checkbox(_("polar_toggle"), value=DEFAULT_POLAR_VIEW)
+    with st.expander(_("phase_3d_title"), expanded=False):
+        st.caption(_("phase_3d_caption"))
+        phase_3d_figure = build_phase_space_3d_figure(trajectory_points)
+        if phase_3d_figure is None:
+            st.info(_("info_no_pd_points"))
+        else:
+            st.plotly_chart(phase_3d_figure, width="stretch", config={"displaylogo": False})
     if use_polar:
         st.caption(_("caption_polar_trajectory"))
         draw_polar_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
