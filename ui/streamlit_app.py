@@ -18,7 +18,7 @@ from model import dynamics
 from model.empirical_dynamics import system_identification_report
 from model.interventions import append_intervention, empty_intervention_frame, load_interventions
 from model.learning_data import build_daily_observation_frame
-from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, latest_plottable_is_current
+from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current
 from model.recommendations import build_recommendation_candidates
 dynamics = importlib.reload(dynamics)
 
@@ -886,16 +886,6 @@ def build_empirical_status_report(daily_summary_frame, daily_view_frame, interve
 
 
 
-def filter_trajectory_points(daily_points: pd.DataFrame, days: int):
-    if daily_points.empty:
-        return daily_points
-    filtered = daily_points.copy()
-    filtered["rhythm_day"] = pd.to_datetime(filtered["rhythm_day"], errors="coerce")
-    latest_day = filtered["rhythm_day"].max()
-    if pd.isna(latest_day):
-        return filtered
-    cutoff = latest_day - pd.Timedelta(days=days - 1)
-    return filtered[filtered["rhythm_day"] >= cutoff].sort_values("rhythm_day")
 def build_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limit: float):
     if daily_points.empty:
         return None
@@ -1772,17 +1762,14 @@ if daily_points.empty:
     st.info(_("info_no_records"))
 else:
     st.caption(_("caption_trajectory"))
-    trajectory_ranges = {"7D": 7, "14D": 14, "30D": 30}
+    trajectory_ranges = ["7D", "14D", "30D", "All"]
     selected_trajectory_range = st.radio(
         _("trajectory_range"),
-        list(trajectory_ranges),
+        trajectory_ranges,
         index=1,
         horizontal=True,
     )
-    trajectory_points = filter_trajectory_points(
-        daily_points,
-        trajectory_ranges[selected_trajectory_range],
-    )
+    trajectory_points = filter_phase_space_points(daily_points, selected_trajectory_range)
     render_phase_space_context(daily_points, attractor_p_limit, attractor_d_limit)
     use_polar = st.checkbox(_("polar_toggle"), value=DEFAULT_POLAR_VIEW)
     if use_polar:
