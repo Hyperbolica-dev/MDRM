@@ -19,6 +19,7 @@ from model.empirical_dynamics import system_identification_report
 from model.interventions import append_intervention, empty_intervention_frame, load_interventions
 from model.learning_data import build_daily_observation_frame
 from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, latest_plottable_is_current
+from model.recommendations import build_recommendation_candidates
 dynamics = importlib.reload(dynamics)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
@@ -226,6 +227,14 @@ L = {
         "empirical_stage_validated_predictor": "VALIDATED PREDICTOR (OBSERVATIONAL)",
         "empirical_stage_advisory_controller": "ADVISORY CONTROLLER ELIGIBLE",
         "empirical_action_warning": "Action effects are not identifiable: executed intervention variation is insufficient. Candidate actions are hidden.",
+        "recommendation_title": "Recommendation draft",
+        "recommendation_caption": "This deterministic draft is not an execution record. Review or edit it, then submit explicitly if you carried it out.",
+        "recommendation_reason_data": "Data is insufficient; use a conservative stabilization action while collecting records.",
+        "recommendation_reason_phase_uncertain": "Phase is outside the safe light range; use stabilization without intentional phase-shifting light.",
+        "recommendation_reason_debt": "Sleep debt is above the selected limit; prioritize recovery before phase shifting.",
+        "recommendation_reason_phase": "Current phase displacement is within the safe range; the candidate follows the CBT_min light window.",
+        "recommendation_reason_maintain": "Phase is inside the deadband; maintain the wake anchor instead of adding phase-shifting light.",
+        "recommendation_reason_execution": "Draft recommendation; only explicit submission records execution.",
         "empirical_candidates": "5. Candidate actions",
         "empirical_candidates_hidden": "No candidate ranking is shown until action-conditional prediction beats persistence and the candidate is inside historical execution support.",
         "empirical_log_title": "Record an executed intervention",
@@ -445,6 +454,14 @@ L = {
         "empirical_stage_validated_predictor": "已验证预测器（观测性）",
         "empirical_stage_advisory_controller": "具备咨询控制器资格",
         "empirical_action_warning": "行动效应不可识别：实际执行干预缺少变化。候选行动已隐藏。",
+        "recommendation_title": "推荐草稿",
+        "recommendation_caption": "这是确定性推荐草稿，不是执行记录。请审核或修改，只有明确提交后才会记录实际执行。",
+        "recommendation_reason_data": "数据不足：继续收集记录期间，先执行保守的节律稳定行动。",
+        "recommendation_reason_phase_uncertain": "相位超出安全光疗范围：采用稳定化行动，不进行主动移相强光照射。",
+        "recommendation_reason_debt": "睡眠债超过当前阈值：先恢复睡眠，再进行相位调整。",
+        "recommendation_reason_phase": "当前相位偏移处于安全范围：候选时间依据 CBT_min 光疗窗口生成。",
+        "recommendation_reason_maintain": "相位处于死区：保持起床锚点，不增加主动移相光疗。",
+        "recommendation_reason_execution": "推荐草稿；只有明确提交才会记录实际执行。",
         "empirical_candidates": "5. 候选行动",
         "empirical_candidates_hidden": "仅当行动条件模型优于持久性基线，且候选行动位于历史执行支持范围内时才显示候选比较。",
         "empirical_log_title": "记录已执行干预",
@@ -1802,6 +1819,25 @@ else:
 st.subheader(_("charts_title"))
 range_choice = st.selectbox(_("time_range"), ["7D", "30D", "90D", "All"], index=1)
 plot_core_trend_charts(daily_points, range_choice)
+latest_recommendation_point = daily_points.sort_values("rhythm_day").iloc[-1] if not daily_points.empty else None
+recommendation_state = observer.copy()
+if daily_summary.empty:
+    recommendation_state["P"] = None
+recommendation_cbt_min = None
+if latest_recommendation_point is not None:
+    recommendation_sleep = latest_recommendation_point.get("sleep_hours")
+    recommendation_wake = latest_recommendation_point.get("wake_time")
+    if recommendation_wake and pd.notna(recommendation_sleep) and float(recommendation_sleep) > 0:
+        recommendation_cbt_min = dynamics.estimate_cbt_min(str(recommendation_wake), float(recommendation_sleep))
+recommendation_candidates = build_recommendation_candidates(
+    recommendation_state,
+    active_params["target_wake"],
+    active_params["sleep_need_hours"],
+    rhythm_day=daily_summary.iloc[-1]["rhythm_day"] if not daily_summary.empty else date.today(),
+    p_limit=attractor_p_limit,
+    d_limit=attractor_d_limit,
+    cbt_min=recommendation_cbt_min,
+)
 learning_interventions = empty_intervention_frame() if is_sample_profile else load_interventions()
 with st.expander(_("empirical_title"), expanded=False):
     st.caption(_("empirical_caption"))
@@ -1864,22 +1900,41 @@ with st.expander(_("empirical_title"), expanded=False):
 
     if not is_sample_profile:
         st.markdown("---")
+        st.markdown(f"**{_('recommendation_title')}**")
+        st.caption(_("recommendation_caption"))
+        recommendation_labels = [
+            f"{candidate['action_type']} · {candidate.get('recommended_time') or 'N/A'}"
+            for candidate in recommendation_candidates
+        ]
+        selected_candidate_index = st.selectbox(
+            _("recommendation_title"),
+            options=range(len(recommendation_candidates)),
+            format_func=lambda index: recommendation_labels[index],
+        )
+        selected_candidate = recommendation_candidates[selected_candidate_index]
+        st.caption(_(selected_candidate["reason_key"]))
         st.markdown(f"**{_('empirical_log_title')}**")
         st.caption(_("empirical_log_caption"))
-        latest_action_day = daily_summary.iloc[-1]["rhythm_day"] if not daily_summary.empty else date.today()
+        candidate_day = pd.Timestamp(selected_candidate["rhythm_day"]).date()
+        candidate_actual_time = datetime.strptime(
+            selected_candidate["recommended_time"] or active_params["target_wake"],
+            "%H:%M",
+        ).time()
+        candidate_duration = selected_candidate["recommended_duration_minutes"]
+        candidate_duration_text = "" if candidate_duration in ("", None) else str(int(candidate_duration))
         with st.form("executed_intervention_form"):
-            action_type_input = st.text_input(_("empirical_action_type"), value="light")
-            action_day_input = st.date_input(_("empirical_action_day"), value=latest_action_day)
-            actual_time_input = st.time_input(_("empirical_actual_time"), value=datetime.now().replace(second=0, microsecond=0).time())
-            duration_input = st.text_input(_("empirical_duration"), value="")
-            notes_input = st.text_input(_("empirical_notes"), value="")
+            action_type_input = st.text_input(_("empirical_action_type"), value=selected_candidate["action_type"])
+            action_day_input = st.date_input(_("empirical_action_day"), value=candidate_day)
+            actual_time_input = st.time_input(_("empirical_actual_time"), value=candidate_actual_time)
+            duration_input = st.text_input(_("empirical_duration"), value=candidate_duration_text)
+            notes_input = st.text_input(_("empirical_notes"), value=selected_candidate["notes"])
             save_action = st.form_submit_button(_("empirical_save_action"))
         if save_action:
             try:
                 append_intervention({
                     "rhythm_day": action_day_input.strftime("%Y-%m-%d"),
                     "action_type": action_type_input,
-                    "recommended_time": "",
+                    "recommended_time": selected_candidate["recommended_time"],
                     "planned_time": "",
                     "actual_time": actual_time_input.strftime("%H:%M"),
                     "duration_minutes": duration_input.strip(),
