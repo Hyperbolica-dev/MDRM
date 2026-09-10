@@ -881,6 +881,50 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
 
     daily_points = pd.DataFrame(daily_points_rows).sort_values("rhythm_day")
     return daily_view, daily_summary, daily_points
+def recommendation_context_key(profile_id, current_state, candidate, context_generation=0):
+    state_values = []
+    for name in ("P", "D", "H"):
+        value = current_state.get(name)
+        state_values.append("na" if value is None or pd.isna(value) else str(value))
+    candidate_values = [
+        profile_id,
+        str(context_generation),
+        str(pd.Timestamp(candidate["rhythm_day"]).date()),
+        str(candidate["action_type"]),
+        str(candidate.get("recommended_time") or ""),
+        str(candidate.get("recommended_duration_minutes") or ""),
+        str(candidate.get("reason_key") or ""),
+        *state_values,
+    ]
+    return "recommendation:" + ":".join(candidate_values)
+
+
+def recommendation_selector_key(profile_id, current_state, candidates, context_generation=0):
+    candidate_keys = [
+        recommendation_context_key(profile_id, current_state, candidate, context_generation)
+        for candidate in candidates
+    ]
+    return "recommendation_selector:" + "|".join(candidate_keys)
+
+
+def initialize_recommendation_draft_state(state, context_key, candidate, target_wake):
+    prefix = f"recommendation_draft:{context_key}"
+    candidate_day = pd.Timestamp(candidate["rhythm_day"]).date()
+    actual_time = candidate.get("recommended_time") or target_wake
+    duration = candidate.get("recommended_duration_minutes")
+    values = {
+        "action_type": candidate["action_type"],
+        "action_day": candidate_day,
+        "actual_time": datetime.strptime(actual_time, "%H:%M").time(),
+        "duration": "" if duration in ("", None) else str(int(duration)),
+        "notes": candidate["notes"],
+    }
+    keys = {name: f"{prefix}:{name}" for name in values}
+    for name, key in keys.items():
+        if key not in state:
+            state[key] = values[name]
+    return keys
+
 @st.cache_data(show_spinner=False)
 def build_empirical_status_report(daily_summary_frame, daily_view_frame, intervention_frame):
     daily_observations = build_daily_observation_frame(daily_summary_frame, daily_view_frame)
@@ -1607,12 +1651,12 @@ with st.sidebar:
         st.session_state.lang = selected_lang
         st.rerun()
 
-    st.subheader(_("profile_selector"))
     selected_profile_id = st.selectbox(
         _("profile_selector"),
         options=list(PROFILE_IDS),
         index=PROFILE_IDS.index(ui_settings["profile_id"]),
         format_func=profile_labels.__getitem__,
+        key="profile_selector",
     )
     is_sample_profile = selected_profile_id in SAMPLE_PROFILE_IDS
     if is_sample_profile:
@@ -1634,6 +1678,16 @@ with st.sidebar:
     )
     st.caption(_("attractor_heuristic"))
     st.markdown("[{}](https://github.com/Hyperbolica-dev/MDRM)".format(_("copyright")))
+previous_profile_id = st.session_state.get("_recommendation_profile_id")
+if previous_profile_id is None:
+    recommendation_context_generation = 0
+elif previous_profile_id != selected_profile_id:
+    recommendation_context_generation = int(st.session_state.get("_recommendation_context_generation", 0)) + 1
+else:
+    recommendation_context_generation = int(st.session_state.get("_recommendation_context_generation", 0))
+st.session_state["_recommendation_profile_id"] = selected_profile_id
+st.session_state["_recommendation_context_generation"] = recommendation_context_generation
+
 
 if (
     attractor_p_limit != ui_settings["attractor_p_limit"]
@@ -1905,29 +1959,46 @@ with st.expander(_("empirical_title"), expanded=False):
             f"{candidate['action_type']} · {candidate.get('recommended_time') or 'N/A'}"
             for candidate in recommendation_candidates
         ]
+        selector_key = recommendation_selector_key(
+            selected_profile_id,
+            recommendation_state,
+            recommendation_candidates,
+            recommendation_context_generation,
+        )
+        if selector_key not in st.session_state:
+            st.session_state[selector_key] = 0
         selected_candidate_index = st.selectbox(
             _("recommendation_title"),
             options=range(len(recommendation_candidates)),
             format_func=lambda index: recommendation_labels[index],
+            key=selector_key,
         )
         selected_candidate = recommendation_candidates[selected_candidate_index]
+        context_key = recommendation_context_key(
+            selected_profile_id,
+            recommendation_state,
+            selected_candidate,
+            recommendation_context_generation,
+        )
+        draft_keys = initialize_recommendation_draft_state(
+            st.session_state,
+            context_key,
+            selected_candidate,
+            active_params["target_wake"],
+        )
         st.caption(_(selected_candidate["reason_key"]))
         st.markdown(f"**{_('empirical_log_title')}**")
         st.caption(_("empirical_log_caption"))
-        candidate_day = pd.Timestamp(selected_candidate["rhythm_day"]).date()
-        candidate_actual_time = datetime.strptime(
-            selected_candidate["recommended_time"] or active_params["target_wake"],
-            "%H:%M",
-        ).time()
-        candidate_duration = selected_candidate["recommended_duration_minutes"]
-        candidate_duration_text = "" if candidate_duration in ("", None) else str(int(candidate_duration))
-        with st.form("executed_intervention_form"):
-            action_type_input = st.text_input(_("empirical_action_type"), value=selected_candidate["action_type"])
-            action_day_input = st.date_input(_("empirical_action_day"), value=candidate_day)
-            actual_time_input = st.time_input(_("empirical_actual_time"), value=candidate_actual_time)
-            duration_input = st.text_input(_("empirical_duration"), value=candidate_duration_text)
-            notes_input = st.text_input(_("empirical_notes"), value=selected_candidate["notes"])
-            save_action = st.form_submit_button(_("empirical_save_action"))
+        with st.form(f"executed_intervention_form:{context_key}"):
+            action_type_input = st.text_input(_("empirical_action_type"), key=draft_keys["action_type"])
+            action_day_input = st.date_input(_("empirical_action_day"), key=draft_keys["action_day"])
+            actual_time_input = st.time_input(_("empirical_actual_time"), key=draft_keys["actual_time"])
+            duration_input = st.text_input(_("empirical_duration"), key=draft_keys["duration"])
+            notes_input = st.text_input(_("empirical_notes"), key=draft_keys["notes"])
+            save_action = st.form_submit_button(
+                _("empirical_save_action"),
+                key=f"{context_key}:submit",
+            )
         if save_action:
             try:
                 append_intervention({
