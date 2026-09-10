@@ -12,6 +12,9 @@ All notable changes to MRDM are recorded here in a maintenance-friendly format.
 - Versioned intervention persistence that keeps recommendations separate from explicit execution reports.
 - Circular chronological transition features, persistence baselines, Gaussian-process forecasts, and walk-forward validation.
 - Experimental shadow-controller status panel with uncertainty, action-support gating, and executed-intervention logging.
+- Deterministic recommendation candidates with editable execution-form prefills; unsubmitted drafts never write intervention records.
+- Cartesian phase-space `All` range using shared filtering logic.
+- Independent experimental 3D P-D-time trajectory with relative time axis, age-bucket fading, and P-D projection camera.
 
 ### Changed
 
