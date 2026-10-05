@@ -1,4 +1,4 @@
-# MRDM v0.5 System Configuration
+# MRDM v1.3.0 System Configuration
 target_wake: "08:30"
 sleep_need_hours: 7.0
 
@@ -6,5 +6,6 @@ sleep_need_hours: 7.0
 lambda_d: 0.90      # 睡眠债衰减系数
 alpha_up: 0.98      # 习惯建立阻尼 (爬坡)
 alpha_down: 0.50    # 习惯破坏阻尼 (跌落)
+routine_wake_tau_hours: 1.0
 recovery_k: 0.4   # 睡眠债比例恢复系数 (单次长睡恢复当前债务 k*100% 封顶)
 recovery_saturation_tau: 2.0  # 恢复饱和速率 (oversleep小时达到~63%最大恢复)

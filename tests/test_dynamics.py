@@ -9,7 +9,9 @@ from model.dynamics import (
     build_daily_summary_frame,
     build_sleep_session,
     calculate_live_state,
+    calculate_habit,
     calculate_phase,
+    calculate_routine_stability,
     calculate_sleep_debt,
     can_recommend_light,
     derive_session_frame,
@@ -73,6 +75,46 @@ def test_explicit_zero_sleep_marks_phase_undefined_and_decays_habit():
     assert pd.isna(summary.iloc[0]["P"])
     assert summary.iloc[0]["D"] == 7.0
     assert summary.iloc[0]["H"] == 0.5
+
+
+def test_awake_total_is_subtracted_without_splitting_the_wake_anchor():
+    raw = records([("2026-08-01", "01:00", "09:00")])
+    raw["awake_minutes"] = 45
+    raw["awake_unknown"] = False
+    derived = derive_session_frame(raw, "08:30")
+    assert derived.iloc[0]["sleep_hours"] == 7.25
+    assert derived.iloc[0]["wake_time"] == "09:00"
+    assert bool(derived.iloc[0]["sleep_duration_known"])
+
+
+def test_unknown_awake_time_keeps_state_estimated_and_prevents_formal_lock():
+    raw = records([(f"2026-08-{day:02d}", "01:30", "08:30") for day in range(1, 9)])
+    raw["awake_minutes"] = 0
+    raw["awake_unknown"] = False
+    raw.loc[0, "awake_unknown"] = True
+    derived = derive_session_frame(raw, "08:30")
+    summary = build_daily_summary_frame(derived, "08:30", 7, 0.9, 0.98, 0.5)
+    assert bool(summary["state_estimated"].all())
+    assert not bool(summary["in_attractor"].any())
+
+
+def test_routine_stability_uses_wake_time_difference_not_target_phase():
+    assert calculate_routine_stability("04:42", "04:54") == pytest.approx(math.exp(-0.2))
+    assert calculate_routine_stability("23:55", "00:05") == pytest.approx(math.exp(-10 / 60))
+
+
+def test_habit_rises_from_routine_stability_even_when_phase_is_outside_target():
+    summary = summarize([
+        ("2026-08-01", "08:00", "08:00"),
+        ("2026-08-02", "23:00", "04:42"),
+        ("2026-08-03", "23:00", "04:54"),
+        ("2026-08-04", "23:00", "04:31"),
+    ])
+    assert summary["routine_stability"].iloc[1:].notna().tolist() == [False, True, True]
+    assert summary.iloc[2]["P"] < -1.0
+    assert summary.iloc[3]["P"] < -1.0
+    assert summary.iloc[3]["H"] > summary.iloc[1]["H"]
+    assert calculate_habit(0.01, 0.8, 0.98, 0.5) > 0.01
 
 
 def test_internal_missing_days_are_all_nighters_without_trailing_inference():

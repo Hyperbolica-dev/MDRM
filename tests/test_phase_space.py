@@ -1,6 +1,30 @@
 import pandas as pd
 
 from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current
+from ui.phase_space import build_phase_line_frame, phase_step_is_contiguous
+
+
+def test_phase_lines_break_across_unknown_or_absent_days():
+    frame = pd.DataFrame([
+        {"rhythm_day": "2026-08-01", "P": 1, "D": 2},
+        {"rhythm_day": "2026-08-02", "P": None, "D": 10},
+        {"rhythm_day": "2026-08-03", "P": 2, "D": 9},
+        {"rhythm_day": "2026-08-05", "P": 1, "D": 8},
+        {"rhythm_day": "2026-08-06", "P": 0, "D": 7},
+    ])
+    for circular in (False, True):
+        line = build_phase_line_frame(frame, circular=circular)
+        assert line["P"].isna().tolist() == [False, True, False, True, False, False]
+
+
+def test_cartesian_seam_does_not_cross_the_target_zone():
+    frame = pd.DataFrame([
+        {"rhythm_day": "2026-08-01", "P": 11.8, "D": 2},
+        {"rhythm_day": "2026-08-02", "P": -11.8, "D": 2},
+    ])
+    assert build_phase_line_frame(frame)["P"].isna().sum() == 1
+    assert build_phase_line_frame(frame, circular=True)["P"].isna().sum() == 0
+    assert not phase_step_is_contiguous(frame.iloc[0], frame.iloc[1])
 
 
 def test_cartesian_view_remains_default():

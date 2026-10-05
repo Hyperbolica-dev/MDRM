@@ -3,6 +3,28 @@ import pandas as pd
 DEFAULT_POLAR_VIEW = False
 
 
+def phase_step_is_contiguous(previous, current, circular=False):
+    if any(pd.isna(row.get(column)) for row in (previous, current) for column in ("P", "D", "rhythm_day")):
+        return False
+    if pd.Timestamp(current["rhythm_day"]) - pd.Timestamp(previous["rhythm_day"]) != pd.Timedelta(days=1):
+        return False
+    return circular or abs(float(current["P"]) - float(previous["P"])) <= 12
+
+
+def build_phase_line_frame(points, circular=False):
+    ordered = points.copy()
+    ordered["rhythm_day"] = pd.to_datetime(ordered["rhythm_day"], errors="coerce")
+    ordered = ordered.dropna(subset=["rhythm_day", "P", "D"]).sort_values("rhythm_day")
+    rows = []
+    previous = None
+    for row in ordered.to_dict("records"):
+        if previous is not None and not phase_step_is_contiguous(previous, row, circular):
+            rows.append({column: None for column in ordered.columns})
+        rows.append(row)
+        previous = row
+    return pd.DataFrame(rows, columns=ordered.columns)
+
+
 def daily_target_mask(frame: pd.DataFrame, p_limit: float, d_limit: float) -> pd.Series:
     phase = pd.to_numeric(frame["P"], errors="coerce")
     debt = pd.to_numeric(frame["D"], errors="coerce")

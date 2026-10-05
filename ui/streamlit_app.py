@@ -2,25 +2,51 @@ import streamlit as st
 import pandas as pd
 import yaml
 import os
-import shutil
 import importlib
 import re
 import math
+import hashlib
 import numpy as np
 from datetime import date, datetime, timedelta, timezone
 import sys
 
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from model import dynamics
-from model.empirical_dynamics import system_identification_report
+from model import dynamics, sleep_pressure, phase_observation, recommendations, phase_objective
+phase_observation = importlib.reload(phase_observation)
+phase_objective = importlib.reload(phase_objective)
+recommendations = importlib.reload(recommendations)
+sleep_pressure = importlib.reload(sleep_pressure)
 from model.interventions import append_intervention, empty_intervention_frame, load_interventions
-from model.learning_data import build_daily_observation_frame
-from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current
+from model.jev_decision import build_jev_payload, evaluate_jev
+from ui.medication_journal import render_medication_journal
+from model.record_storage import atomic_write_csv, create_record_backup, ensure_daily_record_backup
+from ui import phase_space
+phase_space = importlib.reload(phase_space)
+from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current, build_phase_line_frame, phase_step_is_contiguous
+from ui import phase_space_3d
+phase_space_3d = importlib.reload(phase_space_3d)
 from ui.phase_space_3d import build_phase_space_3d_figure
+from ui.core_charts import build_core_trend_figure
+from ui import routine_patterns
+routine_patterns = importlib.reload(routine_patterns)
+from ui.routine_patterns import render_routine_patterns
+from ui import record_calendar
+record_calendar = importlib.reload(record_calendar)
+from ui.record_calendar import build_date_input_calendar_css, classify_entry_dates
+from ui import entry_calendar, daily_overview
+entry_calendar = importlib.reload(entry_calendar)
+daily_overview = importlib.reload(daily_overview)
+from ui.entry_calendar import render_entry_calendar
+from ui.daily_overview import render_daily_overview
+from ui import sleep_pressure as pressure_ui
+pressure_ui = importlib.reload(pressure_ui)
+from ui import phase_objective as objective_ui
+objective_ui = importlib.reload(objective_ui)
 from model.recommendations import build_recommendation_candidates
+from model.time_input import is_clock_time, normalize_clock_time
+from model.sleep_entry import parse_sleep_intervals, validate_sleep_windows
 dynamics = importlib.reload(dynamics)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
@@ -37,7 +63,9 @@ L = {
         "err_missing_columns": "Missing required columns: {cols}.",
         "err_empty_values": "Imported file contains empty values. Please fill in required fields first.",
         "err_date_format": "date column must use YYYY-MM-DD format.",
-        "err_time_format": "{column} column must use HH:MM format.",
+        "err_time_format": "{column} column contains an invalid time. Use examples like 08:30, 830, or ８：３０.",
+        "err_time_entry": "Please enter valid times. Examples: 08:30, 830, 8:3, or ８：３０.",
+        "err_duplicate_record": "This exact sleep record already exists. Nothing was added.",
         "err_raw_invalid": "Raw data contains empty or unparseable fields. Please correct before saving.",
         "info_no_pd_data": "Not enough data to plot P-D trajectory.",
         "info_no_pd_points": "P-D trajectory is missing plottable state points.",
@@ -53,6 +81,27 @@ L = {
         "target_utc_offset": "Target UTC offset",
         "target_utc_offset_help": "UTC offset where the target rhythm is defined. Supports quarter-hour time zones.",
         "dashboard_title": "State Observer Dashboard",
+        "today_title": "Today",
+        "today_log_title": "Confirm last sleep",
+        "today_log_caption": "Record the last sleep first. Normal entry should take about ten seconds.",
+        "today_state_title": "Current direction",
+        "today_state_empty": "Record the latest sleep to establish the current direction.",
+        "today_state_phase_unknown": "Wake regularity is {routine}, but the current phase direction is not yet reliable.",
+        "today_state_summary": "Wake timing is {routine}; the rhythm is {phase}; sleep debt is {debt}.",
+        "today_routine_stable": "relatively consistent in the recorded window",
+        "today_routine_variable": "still variable",
+        "today_routine_unknown": "not established yet",
+        "today_phase_target": "near the target",
+        "today_phase_late": "about {hours} hours later than the target",
+        "today_phase_early": "about {hours} hours earlier than the target",
+        "today_debt_high": "elevated",
+        "today_debt_controlled": "currently controlled",
+        "today_action_title": "Today's primary action",
+        "today_action_when": "Suggested time",
+        "today_action_duration": "Suggested duration",
+        "today_action_reason": "Why this action",
+        "today_alternatives_hint": "All generated alternatives remain available in the analysis section below.",
+        "analysis_title": "Analysis and research details",
         "metric_p": "P - Phase Offset",
         "metric_d": "D - Sleep Debt",
         "metric_h": "H - Habit Strength",
@@ -67,8 +116,9 @@ L = {
         "live_no_data": "A recorded wake time is required for live-state estimation.",
         "label_inside": "Inside Attractor",
         "label_outside": "Outside Attractor",
+        "label_unknown": "Not established",
         "info_no_records": "No records yet. Use the daily entry form below to start the observer.",
-        "caption_trajectory": "Green = one-day target zone; formal lock still requires 7 consecutive qualifying days. Point color (gray→blue) shows time, the arrow shows the latest step, and gold marks the latest plottable state.",
+        "caption_trajectory": "Green = one-day target zone; formal lock requires 7 consecutive qualifying days. Gray→blue = older→newer; gold = latest plottable state. Lines break at missing phases/dates and at the Cartesian ±12h seam. The arrow appears only for the latest continuous step.",
         "charts_title": "Core Trend Charts",
         "time_range": "Time range",
         "test_panel_title": "Test Panel",
@@ -84,9 +134,10 @@ L = {
         "form_date": "Date",
         "form_wake_time": "Wake Time (O1)",
         "form_sleep_time": "Sleep Start (O2)",
+        "form_time_help": "Accepts 08:30, 830, 8:3, 8pm, 8点半, and full-width forms such as ８：３０. Values are normalized to HH:MM when submitted.",
         "form_momentum": "Momentum (O3) [0-dysregulated – 10-ideal]",
         "form_disturbance": "Major disturbance (O4) (e.g. all-nighter / illness)",
-        "form_medication": "Sleep medication used",
+        "form_medication": "Sleep-aid medication disturbance",
         "form_submit": "Record & Calculate State",
         "submit_success": "Record saved!",
         "submit_state": "**Current state:** Rhythm day {day} | Phase(P): {p}h | Sleep Debt(D): {d}h | Habit Depth(H): {h} | Total sleep: {sleep}h | Sessions: {sessions}",
@@ -97,7 +148,7 @@ L = {
         "del_col": "Delete",
         "del_help": "Check to delete this raw record",
         "dist_help": "0/1 disturbance flag",
-        "med_help": "Whether sleep medication was used",
+        "med_help": "Mark sleep-aid use associated with this sleep. Names, doses and times are not required; this does not establish a medication effect.",
         "save_button": "Save Raw Data Changes",
         "save_ok": "Changes saved with backup. Latest rhythm day {day} | P={p}h | D={d}h | H={h}",
         "save_fail": "Save failed: {exc}",
@@ -110,6 +161,7 @@ L = {
         "chart_wake": "Wake Time (hour)",
         "chart_sleep_debt": "Sleep Debt D",
         "chart_habit": "Habit Strength H",
+        "chart_routine_stability": "Routine Stability (shadow)",
         "chart_date": "Date",
         "chart_title": "Core Trend Charts ({range})",
         "diagnosis_insufficient": "Insufficient data",
@@ -155,14 +207,14 @@ L = {
         "copyright": "© 2026 Hyperbolica-dev · GitHub",
         "observation_title": "Rhythm observation",
         "observation_insufficient": "Observation inconclusive: valid phase data is insufficient.",
-        "observation_locked": "Today's P={p}h and D={d}h qualify under the selected thresholds. Formal lock still depends on the consecutive-day streak.",
-        "observation_jetlag": "Phase delay and sleep debt are both elevated: stabilize wake time and recover sleep before pursuing a stronger phase shift.",
-        "observation_deprivation": "Phase advance and sleep debt are both elevated: prioritize sufficient sleep opportunity and a fixed wake time before phase correction.",
-        "observation_advance": "Phase advance is dominant: keep the wake time consistent and avoid extending the schedule earlier until the phase returns toward target.",
-        "observation_drift": "Phase delay is dominant while debt remains controlled: preserve the wake anchor and use the light window consistently.",
+        "observation_locked": "The latest recorded P={p}h and modeled D={d}h qualify under the selected thresholds. Formal lock still depends on the consecutive-day streak.",
+        "observation_jetlag": "Sleep midpoint is later than target (P={p}h); modeled debt D={d}h is above the selected threshold.",
+        "observation_deprivation": "Sleep midpoint is earlier than target (P={p}h); modeled debt D={d}h is above the selected threshold.",
+        "observation_advance": "Sleep midpoint is earlier than target (P={p}h); modeled debt D={d}h is below the selected threshold.",
+        "observation_drift": "Sleep midpoint is later than target (P={p}h); modeled debt D={d}h is below the selected threshold.",
         "observation_unknown": "The current pattern is mixed: keep wake time stable and collect more consecutive records before changing intervention timing.",
         "habit_observation_title": "Habit observation",
-        "habit_wake_consistency": "7-day wake consistency",
+        "habit_routine_stability": "Routine stability (shadow)",
         "habit_lock_streak": "Current lock streak",
         "habit_disturbances": "Disturbances in view",
         "habit_trend": "H trend",
@@ -179,7 +231,7 @@ L = {
         "polar_toggle": "Circular phase view (advanced)",
         "caption_polar_trajectory": "Angle = P and radius = D. This view preserves the -12h/+12h seam but makes rectangular target margins harder to compare.",
         "phase_3d_title": "3D Time View [Experimental]",
-        "phase_3d_caption": "X = P phase, Y = D sleep debt, Z = days from the latest observation. Older time buckets fade; drag to rotate. Cartesian remains the operational view.",
+        "phase_3d_caption": "X = target offset P, Y = modeled debt D, Z = days from the latest record. Start oblique; use fixed orthographic views to compare each pair. Gold marks the latest plottable date; gray→blue means older→newer.",
         "phase_margin": "Phase threshold margin",
         "debt_margin": "Debt threshold margin",
         "qualifying_streak": "Qualifying streak",
@@ -229,7 +281,7 @@ L = {
         "empirical_stage_system_identification": "SYSTEM IDENTIFICATION / DATA COLLECTION",
         "empirical_stage_validated_predictor": "VALIDATED PREDICTOR (OBSERVATIONAL)",
         "empirical_stage_advisory_controller": "ADVISORY CONTROLLER ELIGIBLE",
-        "empirical_action_warning": "Action effects are not identifiable: executed intervention variation is insufficient. Candidate actions are hidden.",
+        "empirical_action_warning": "Action effects are not yet identifiable. Rule-based candidates remain visible, but the learned model cannot compare their effects yet.",
         "recommendation_title": "Recommendation draft",
         "recommendation_caption": "This deterministic draft is not an execution record. Review or edit it, then submit explicitly if you carried it out.",
         "recommendation_reason_data": "Data is insufficient; use a conservative stabilization action while collecting records.",
@@ -238,17 +290,61 @@ L = {
         "recommendation_reason_phase": "Current phase displacement is within the safe range; the candidate follows the CBT_min light window.",
         "recommendation_reason_maintain": "Phase is inside the deadband; maintain the wake anchor instead of adding phase-shifting light.",
         "recommendation_reason_execution": "Draft recommendation; only explicit submission records execution.",
+        "jev_shadow_title": "Jev shadow review",
+        "jev_shadow_caption": "Optional observe-only review of existing candidates. It cannot create actions, override local safety gates, or record execution.",
+        "jev_shadow_run": "Run Jev shadow review",
+        "jev_shadow_disabled": "Jev is not configured. Set TYPESAFE_API_KEY in the process environment to enable it.",
+        "jev_shadow_unavailable": "Jev is unavailable; the local deterministic recommendation remains unchanged.",
+        "jev_shadow_invalid": "Jev returned an invalid decision; the local deterministic recommendation remains unchanged.",
+        "jev_shadow_preference": "Jev's shadow opinion: consider {candidate} first",
+        "jev_shadow_single": "Jev's shadow opinion: {candidate} remains reasonable to consider",
+        "jev_shadow_meaning": "This is a second opinion over existing candidates. It does not change the MRDM recommendation or execute anything.",
+        "jev_assurance": "Overall assurance",
+        "jev_level_high": "Relatively strong",
+        "jev_level_medium": "Moderate",
+        "jev_level_low": "Limited",
+        "jev_single_note": "Only one local candidate was supplied, so Jev did not make a meaningful comparison between alternatives.",
+        "jev_technical_title": "Technical probabilities",
+        "jev_metric_confidence": "Choice clarity",
+        "jev_metric_safety": "Local-rule compatibility",
+        "jev_metric_evidence": "Evidence sufficiency",
+        "jev_help_confidence": "How clearly Jev separates this candidate from the alternatives. It is not the probability that the advice is correct.",
+        "jev_help_safety": "Whether Jev sees a conflict with the supplied local gates. This is not a clinical safety probability; MRDM's local rules remain authoritative.",
+        "jev_help_evidence": "Whether the coarse information sent to Jev appears sufficient for this comparison.",
+        "jev_low_evidence": "Jev considers the available evidence limited. Treat this result as a weak prompt for review, not a decision.",
+        "jev_shared_title": "What is sent to Jev?",
+        "jev_shared_caption": "Only the following coarse buckets and candidate fields are sent. Dates, profiles, notes, exact values, medication details, and history are excluded.",
+        "jev_shared_state": "Coarse current state",
+        "jev_shared_candidates": "Candidate summary",
+        "candidate_action": "Action",
+        "candidate_time": "Suggested time",
+        "candidate_duration": "Duration",
+        "candidate_basis": "Basis",
+        "candidate_rule_basis": "Local MRDM rule",
+        "action_light": "Timed bright light",
+        "action_sleep_recovery": "Protected sleep recovery",
+        "action_stabilize_wake": "Stabilize wake time",
+        "action_maintain_wake": "Maintain wake anchor",
+        "jev_shadow_vetoed": "All candidates were vetoed locally; Jev was not called.",
         "empirical_candidates": "5. Candidate actions",
-        "empirical_candidates_hidden": "No candidate ranking is shown until action-conditional prediction beats persistence and the candidate is inside historical execution support.",
-        "empirical_log_title": "Record an executed intervention",
-        "empirical_log_caption": "Records explicit user-reported execution only. Displayed recommendations are never treated as completed actions.",
+        "empirical_candidates_hidden": "Candidates are always shown. System-identification status only controls whether the learned model may compare predicted action effects.",
+        "empirical_log_title": "Action feedback",
+        "empirical_log_caption": "Report what happened. A displayed or accepted suggestion is never treated as executed.",
         "empirical_action_type": "Action type",
         "empirical_action_day": "Rhythm day",
         "empirical_actual_time": "Actual time",
+        "empirical_response": "What happened?",
+        "response_completed": "Completed",
+        "response_partial": "Partly completed",
+        "response_accepted": "Accepted / planned",
+        "response_deferred": "Do later",
+        "response_not_completed": "Not completed",
+        "response_declined": "Declined",
+        "response_not_seen": "I did not see this in time",
         "empirical_duration": "Duration minutes (optional)",
         "empirical_notes": "Notes (optional)",
-        "empirical_save_action": "Save executed intervention",
-        "empirical_action_saved": "Executed intervention saved.",
+        "empirical_save_action": "Save action feedback",
+        "empirical_action_saved": "Action feedback saved.",
         "empirical_action_error": "Intervention was not saved: {error}",
         "empirical_beats_yes": "Yes",
         "empirical_beats_no": "No",
@@ -266,7 +362,9 @@ L = {
         "err_missing_columns": "缺少必需列: {cols}。",
         "err_empty_values": "导入文件包含空值，请先补齐必需字段。",
         "err_date_format": "date 列必须使用 YYYY-MM-DD 格式。",
-        "err_time_format": "{column} 列必须使用 HH:MM 格式。",
+        "err_time_format": "{column} 列包含无效时间。可输入 08:30、830 或 ８：３０ 等格式。",
+        "err_time_entry": "请输入有效时间，例如 08:30、830、8:3 或 ８：３０。",
+        "err_duplicate_record": "这条完全相同的睡眠记录已存在，未重复添加。",
         "err_raw_invalid": "原始数据中存在空值或无法解析的字段，请先修正后再保存。",
         "info_no_pd_data": "当前没有足够的数据绘制 P-D 轨迹。",
         "info_no_pd_points": "P-D 轨迹缺少可绘制的状态点。",
@@ -282,6 +380,27 @@ L = {
         "target_utc_offset": "目标 UTC 偏移",
         "target_utc_offset_help": "目标节律所在地的 UTC 偏移，支持 15 分钟时区。",
         "dashboard_title": "状态观察仪表盘",
+        "today_title": "今天",
+        "today_log_title": "确认昨夜睡眠",
+        "today_log_caption": "先记录最近一次睡眠；正常情况下约十秒即可完成。",
+        "today_state_title": "当前方向",
+        "today_state_empty": "记录最近一次睡眠后，系统才能建立当前方向。",
+        "today_state_phase_unknown": "起床规律度{routine}，但当前相位方向还不可靠。",
+        "today_state_summary": "起床时间{routine}；整体节律{phase}；睡眠债{debt}。",
+        "today_routine_stable": "在记录窗口内较一致",
+        "today_routine_variable": "仍有明显波动",
+        "today_routine_unknown": "尚未建立",
+        "today_phase_target": "已接近目标",
+        "today_phase_late": "比目标晚约 {hours} 小时",
+        "today_phase_early": "比目标早约 {hours} 小时",
+        "today_debt_high": "偏高",
+        "today_debt_controlled": "目前受控",
+        "today_action_title": "今日主行动",
+        "today_action_when": "建议时间",
+        "today_action_duration": "建议持续",
+        "today_action_reason": "为什么是它",
+        "today_alternatives_hint": "全部已生成备选仍会显示在下方分析区域中。",
+        "analysis_title": "分析与研究详情",
         "metric_p": "P - 相位偏移",
         "metric_d": "D - 睡眠债",
         "metric_h": "H - 习惯强度",
@@ -296,8 +415,9 @@ L = {
         "live_no_data": "需要至少一条起床时间记录才能估算实时状态。",
         "label_inside": "处于吸引域内",
         "label_outside": "处于吸引域外",
+        "label_unknown": "尚未建立",
         "info_no_records": "尚无记录，请使用下方每日录入表单启动观察器。",
-        "caption_trajectory": "绿色区域 = 单日达标区；正式锁定仍需连续 7 个达标日。点颜色（灰→蓝）表示时间，箭头表示最近一步，金色表示最近可绘制状态。",
+        "caption_trajectory": "绿色 = 单日达标区，正式锁定需连续 7 天达标。灰→蓝 = 旧→新，金色 = 最近可绘制状态。缺失日期、无效相位和直角图 ±12 小时接缝处断线；仅在最新一步连续有效时显示箭头。",
         "charts_title": "核心趋势图",
         "time_range": "时间范围",
         "test_panel_title": "测试台",
@@ -313,9 +433,10 @@ L = {
         "form_date": "日期",
         "form_wake_time": "起床时间 (O1)",
         "form_sleep_time": "睡眠开始时间 (O2)",
+        "form_time_help": "支持 08:30、830、8:3、8点半，以及 ８：３０ 等全角写法；提交后会统一整理为 HH:MM。",
         "form_momentum": "动量 (O3) [0-失调 – 10-理想]",
         "form_disturbance": "重大扰动 (O4)（如通宵/疾病）",
-        "form_medication": "是否使用助眠药物",
+        "form_medication": "助眠药物扰动",
         "form_submit": "记录并计算状态",
         "submit_success": "记录已保存！",
         "submit_state": "**当前状态：** 节律日 {day} | 相位(P)：{p}h | 睡眠债(D)：{d}h | 习惯深度(H)：{h} | 总睡眠：{sleep}h | 睡眠段数：{sessions}",
@@ -326,7 +447,7 @@ L = {
         "del_col": "删除",
         "del_help": "勾选后会删除该条原始记录",
         "dist_help": "0/1 扰动标记",
-        "med_help": "是否使用助眠药物",
+        "med_help": "本次睡眠有助眠药物介入时勾选。不必填写药名、剂量或时间；标记不代表已确认药物造成移相。",
         "save_button": "保存原始数据修改",
         "save_ok": "已保存修改并生成备份。最新节律日 {day} | P={p}h | D={d}h | H={h}",
         "save_fail": "保存失败：{exc}",
@@ -339,6 +460,7 @@ L = {
         "chart_wake": "起床时间（时）",
         "chart_sleep_debt": "睡眠债 D",
         "chart_habit": "习惯强度 H",
+        "chart_routine_stability": "作息稳定性（影子指标）",
         "chart_date": "日期",
         "chart_title": "核心趋势图（{range}）",
         "diagnosis_insufficient": "数据不足",
@@ -384,14 +506,14 @@ L = {
         "copyright": "© 2026 Hyperbolica-dev · GitHub",
         "observation_title": "节律观察结论",
         "observation_insufficient": "结论暂不明确：有效相位数据不足。",
-        "observation_locked": "今日 P={p}h、D={d}h 达到所选阈值；正式锁定仍取决于连续达标日数。",
-        "observation_jetlag": "相位延迟与睡眠债均偏高：先固定起床时间并补足睡眠，再进行更强的相位调整。",
-        "observation_deprivation": "相位前移与睡眠债均偏高：先保证充足睡眠机会和固定起床时间，再处理相位校正。",
-        "observation_advance": "相位前移较突出：保持起床时间一致，在相位回归目标前避免进一步提前作息。",
-        "observation_drift": "相位延迟较突出但睡眠债受控：保持起床锚点，并按光疗窗口持续执行。",
+        "observation_locked": "最新记录的 P={p}h、模型 D={d}h 达到所选阈值；正式锁定仍取决于连续达标日数。",
+        "observation_jetlag": "睡眠中点晚于目标（P={p}h），模型睡眠债 D={d}h 高于所选阈值。",
+        "observation_deprivation": "睡眠中点早于目标（P={p}h），模型睡眠债 D={d}h 高于所选阈值。",
+        "observation_advance": "睡眠中点早于目标（P={p}h），模型睡眠债 D={d}h 低于所选阈值。",
+        "observation_drift": "睡眠中点晚于目标（P={p}h），模型睡眠债 D={d}h 低于所选阈值。",
         "observation_unknown": "当前模式较混合：保持起床时间稳定，连续记录更多数据后再改变干预时点。",
         "habit_observation_title": "习惯观察",
-        "habit_wake_consistency": "近 7 天起床稳定性",
+        "habit_routine_stability": "作息稳定性（影子指标）",
         "habit_lock_streak": "当前锁定连续天数",
         "habit_disturbances": "当前范围内的扰动次数",
         "habit_trend": "H 趋势",
@@ -408,7 +530,7 @@ L = {
         "polar_toggle": "环形相位视图（进阶）",
         "caption_polar_trajectory": "角度 = P，半径 = D。该视图保留 -12h/+12h 接缝，但不适合比较矩形目标区的阈值余量。",
         "phase_3d_title": "3D 时间视图【实验】",
-        "phase_3d_caption": "X = P 相位，Y = D 睡眠债，Z = 距最新观测的天数。较早时间段逐渐淡化；可拖动旋转。Cartesian 仍是主要操作视图。",
+        "phase_3d_caption": "X = P 目标偏移，Y = D 模型睡眠债，Z = 距最新记录的天数。默认斜视；固定正交视角便于比较两轴。金点标注最近可绘制日期，灰→蓝表示旧→新。",
         "phase_margin": "相位阈值余量",
         "debt_margin": "睡眠债阈值余量",
         "qualifying_streak": "连续达标日",
@@ -458,7 +580,7 @@ L = {
         "empirical_stage_system_identification": "系统识别 / 数据收集",
         "empirical_stage_validated_predictor": "已验证预测器（观测性）",
         "empirical_stage_advisory_controller": "具备咨询控制器资格",
-        "empirical_action_warning": "行动效应不可识别：实际执行干预缺少变化。候选行动已隐藏。",
+        "empirical_action_warning": "行动效应尚不可识别。规则候选仍会显示，但学习模型暂时不能比较它们的效果。",
         "recommendation_title": "推荐草稿",
         "recommendation_caption": "这是确定性推荐草稿，不是执行记录。请审核或修改，只有明确提交后才会记录实际执行。",
         "recommendation_reason_data": "数据不足：继续收集记录期间，先执行保守的节律稳定行动。",
@@ -467,17 +589,61 @@ L = {
         "recommendation_reason_phase": "当前相位偏移处于安全范围：候选时间依据 CBT_min 光疗窗口生成。",
         "recommendation_reason_maintain": "相位处于死区：保持起床锚点，不增加主动移相光疗。",
         "recommendation_reason_execution": "推荐草稿；只有明确提交才会记录实际执行。",
+        "jev_shadow_title": "Jev 影子评审",
+        "jev_shadow_caption": "仅对已有候选进行可选的观察性评审；不能生成行动、覆盖本地安全门或记录执行。",
+        "jev_shadow_run": "运行 Jev 影子评审",
+        "jev_shadow_disabled": "Jev 尚未配置。请在进程环境中设置 TYPESAFE_API_KEY 后启用。",
+        "jev_shadow_unavailable": "Jev 当前不可用；本地确定性建议保持不变。",
+        "jev_shadow_invalid": "Jev 返回了无效决策；本地确定性建议保持不变。",
+        "jev_shadow_preference": "Jev 的影子意见：优先考虑「{candidate}」",
+        "jev_shadow_single": "Jev 的影子意见：「{candidate}」可以继续作为考虑项",
+        "jev_shadow_meaning": "这是对已有候选的第二意见，不会改变 MRDM 建议，也不会自动执行。",
+        "jev_assurance": "综合把握",
+        "jev_level_high": "相对较强",
+        "jev_level_medium": "中等",
+        "jev_level_low": "有限",
+        "jev_single_note": "本次只有一个本地候选，因此 Jev 没有进行有意义的候选间比较。",
+        "jev_technical_title": "技术概率",
+        "jev_metric_confidence": "选择清晰度",
+        "jev_metric_safety": "本地规则兼容度",
+        "jev_metric_evidence": "证据充分度",
+        "jev_help_confidence": "Jev 区分该候选与其他候选的清晰程度，不是“建议正确率”。",
+        "jev_help_safety": "Jev 是否发现候选与本地门控冲突；这不是临床安全概率，MRDM 本地规则始终优先。",
+        "jev_help_evidence": "Jev 判断当前发送的信息是否足以支持这次比较。",
+        "jev_low_evidence": "Jev 认为现有证据有限。请把结果视为提醒复核，而不是决策。",
+        "jev_shared_title": "后台向 Jev 发送了什么？",
+        "jev_shared_caption": "只发送下面列出的粗粒度区间和候选字段；不发送日期、用户、备注、精确数值、药物详情或历史记录。",
+        "jev_shared_state": "粗粒度当前状态",
+        "jev_shared_candidates": "候选摘要",
+        "candidate_action": "行动",
+        "candidate_time": "建议时间",
+        "candidate_duration": "持续时间",
+        "candidate_basis": "依据",
+        "candidate_rule_basis": "MRDM 本地规则",
+        "action_light": "定时强光",
+        "action_sleep_recovery": "优先恢复睡眠",
+        "action_stabilize_wake": "稳定起床时间",
+        "action_maintain_wake": "保持起床锚点",
+        "jev_shadow_vetoed": "所有候选均被本地规则否决；未调用 Jev。",
         "empirical_candidates": "5. 候选行动",
-        "empirical_candidates_hidden": "仅当行动条件模型优于持久性基线，且候选行动位于历史执行支持范围内时才显示候选比较。",
-        "empirical_log_title": "记录已执行干预",
-        "empirical_log_caption": "仅记录用户明确报告的实际执行。界面显示的建议绝不视为已完成行动。",
+        "empirical_candidates_hidden": "候选始终显示。系统识别状态只决定学习模型能否比较行动效果。",
+        "empirical_log_title": "行动反馈",
+        "empirical_log_caption": "请记录实际发生的情况。建议被显示或接受，都不等于已执行。",
         "empirical_action_type": "行动类型",
         "empirical_action_day": "节律日",
         "empirical_actual_time": "实际时间",
+        "empirical_response": "实际发生了什么？",
+        "response_completed": "已完成",
+        "response_partial": "部分完成",
+        "response_accepted": "已接受／已计划",
+        "response_deferred": "稍后再做",
+        "response_not_completed": "未完成",
+        "response_declined": "不采用",
+        "response_not_seen": "当时没看到这条建议",
         "empirical_duration": "持续分钟数（可选）",
         "empirical_notes": "备注（可选）",
-        "empirical_save_action": "保存已执行干预",
-        "empirical_action_saved": "已保存执行干预。",
+        "empirical_save_action": "保存行动反馈",
+        "empirical_action_saved": "已保存行动反馈。",
         "empirical_action_error": "干预未保存：{error}",
         "empirical_beats_yes": "是",
         "empirical_beats_no": "否",
@@ -503,15 +669,15 @@ UI_SETTINGS_FILE = "data/ui_settings.yaml"
 PROFILE_DIR = "data/profiles"
 PROFILE_IDS = ("personal", "stable", "delay", "debt", "advance")
 SAMPLE_PROFILE_IDS = PROFILE_IDS[1:]
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 ATTRACTOR_DAYS = 7
 BACKUP_RETENTION_COUNT = 30
-RAW_COLUMNS = ["date", "wake_time", "sleep_time", "momentum", "disturbance", "sleep_medication"]
+LEGACY_RAW_COLUMNS = ["date", "wake_time", "sleep_time", "momentum", "disturbance", "sleep_medication"]
+RAW_COLUMNS = LEGACY_RAW_COLUMNS + ["awake_minutes", "awake_unknown"]
 META_COLUMNS = ["schema_version"]
 DERIVED_COLUMNS = ["P", "D", "H", "in_attractor"]
 PREFERRED_COLUMNS = META_COLUMNS + RAW_COLUMNS + DERIVED_COLUMNS
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
 if not os.path.exists("data"):
     os.makedirs("data")
@@ -532,6 +698,9 @@ def load_ui_settings():
         "attractor_d_limit": 5.0,
         "target_utc_offset": 0.0,
         "profile_id": "personal",
+        "lang": "en",
+        "target_wake": config["target_wake"],
+        "sleep_need_hours": float(config["sleep_need_hours"]),
     }
     if not os.path.exists(UI_SETTINGS_FILE):
         return defaults
@@ -555,6 +724,9 @@ def load_ui_settings():
             "attractor_d_limit": d_limit,
             "target_utc_offset": target_utc_offset,
             "profile_id": profile_id,
+            "lang": loaded.get("lang") if loaded.get("lang") in {"en", "cn"} else "en",
+            "target_wake": datetime.strptime(loaded.get("target_wake", defaults["target_wake"]), "%H:%M").strftime("%H:%M"),
+            "sleep_need_hours": min(16.0, max(1.0, float(loaded.get("sleep_need_hours", defaults["sleep_need_hours"])))),
         }
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         return defaults
@@ -571,6 +743,9 @@ def save_ui_settings(attractor_p_limit: float, attractor_d_limit: float, target_
                 "attractor_d_limit": float(attractor_d_limit),
                 "target_utc_offset": float(target_utc_offset),
                 "profile_id": profile_id,
+                "lang": st.session_state.lang,
+                "target_wake": st.session_state.get("test_target_wake", datetime.strptime(config["target_wake"], "%H:%M").time()).strftime("%H:%M"),
+                "sleep_need_hours": float(st.session_state.get("test_sleep_need_hours", config["sleep_need_hours"])),
             },
             settings_file,
             sort_keys=True,
@@ -592,43 +767,16 @@ def ensure_schema_version_column(df: pd.DataFrame) -> pd.DataFrame:
     if "schema_version" not in normalized.columns:
         normalized["schema_version"] = CURRENT_SCHEMA_VERSION
     normalized["schema_version"] = pd.to_numeric(normalized["schema_version"], errors="coerce")
-    normalized["schema_version"] = normalized["schema_version"].fillna(CURRENT_SCHEMA_VERSION).astype(int)
+    normalized["schema_version"] = CURRENT_SCHEMA_VERSION
+    for column, default in {"awake_minutes": 0, "awake_unknown": False}.items():
+        if column not in normalized:
+            normalized[column] = default
+        normalized[column] = normalized[column].fillna(default)
     return normalized
 
 
-def keep_recent_backups(backup_dir: str = BACKUP_DIR, retention_count: int = BACKUP_RETENTION_COUNT):
-    if not os.path.exists(backup_dir):
-        return
-    backup_files = sorted(
-        [
-            os.path.join(backup_dir, name)
-            for name in os.listdir(backup_dir)
-            if name.startswith("records_backup_") and name.endswith(".csv")
-        ],
-        key=lambda path: os.path.getmtime(path),
-        reverse=True,
-    )
-    for path in backup_files[retention_count:]:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
 def ensure_daily_backup(data_file: str = DATA_FILE):
-    if not os.path.exists(data_file):
-        return
-    os.makedirs(BACKUP_DIR, exist_ok=True)
-    today_tag = datetime.now().strftime("%Y%m%d")
-    existing_today = [
-        name for name in os.listdir(BACKUP_DIR)
-        if name.startswith("records_backup_") and name.endswith(".csv")
-    ]
-    if existing_today:
-        return
-    backup_name = datetime.now().strftime("records_backup_%Y%m%d_%H%M%S.csv")
-    shutil.copy2(data_file, os.path.join(BACKUP_DIR, backup_name))
-    keep_recent_backups()
+    return ensure_daily_record_backup(data_file, BACKUP_DIR, retention_count=BACKUP_RETENTION_COUNT)
 
 
 def validate_date_string(value: str) -> bool:
@@ -636,7 +784,7 @@ def validate_date_string(value: str) -> bool:
 
 
 def validate_time_string(value: str) -> bool:
-    return bool(TIME_PATTERN.match(str(value)))
+    return is_clock_time(value)
 
 
 def validate_import_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -650,12 +798,13 @@ def validate_import_frame(df: pd.DataFrame) -> pd.DataFrame:
             raise ValueError(_("err_version_empty"))
         if len(version_values) > 1:
             raise ValueError(_("err_version_multiple"))
-        if version_values[0] != CURRENT_SCHEMA_VERSION:
+        if version_values[0] not in (1, CURRENT_SCHEMA_VERSION):
             raise ValueError(_("err_version_unsupported", v=version_values[0], current=CURRENT_SCHEMA_VERSION))
     else:
         working["schema_version"] = CURRENT_SCHEMA_VERSION
 
-    missing_columns = [column for column in RAW_COLUMNS if column not in working.columns]
+    working = ensure_schema_version_column(working)
+    missing_columns = [column for column in LEGACY_RAW_COLUMNS if column not in working.columns]
     if missing_columns:
         raise ValueError(_("err_missing_columns", cols=", ".join(missing_columns)))
 
@@ -668,9 +817,10 @@ def validate_import_frame(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(_("err_date_format"))
 
     for column in ["wake_time", "sleep_time"]:
-        invalid_times = [value for value in required_values[column].astype(str).tolist() if not validate_time_string(value)]
-        if invalid_times:
+        normalized_times = required_values[column].map(normalize_clock_time)
+        if normalized_times.isna().any():
             raise ValueError(_("err_time_format", column=column))
+        required_values[column] = normalized_times
 
     normalized = normalize_raw_records(working[RAW_COLUMNS])
     normalized = ensure_schema_version_column(normalized)
@@ -683,7 +833,7 @@ def write_records_frame(df: pd.DataFrame, path: str = DATA_FILE):
         if column not in output.columns:
             output[column] = pd.NA
     output = output[PREFERRED_COLUMNS]
-    output.to_csv(path, index=False)
+    atomic_write_csv(output, path, index=False)
 
 
 def load_records_frame(path: str = DATA_FILE):
@@ -691,6 +841,7 @@ def load_records_frame(path: str = DATA_FILE):
         return get_empty_records_frame()
 
     df = pd.read_csv(path)
+    df = ensure_schema_version_column(df)
     for column in PREFERRED_COLUMNS:
         if column not in df.columns:
             df[column] = pd.NA
@@ -749,7 +900,7 @@ def ensure_profile_samples():
             write_records_frame(build_sample_profile(profile_id), path)
 
 def normalize_raw_records(df: pd.DataFrame) -> pd.DataFrame:
-    normalized = df.copy()
+    normalized = ensure_schema_version_column(df.copy())
 
     if normalized.empty:
         return pd.DataFrame(columns=RAW_COLUMNS)
@@ -760,17 +911,21 @@ def normalize_raw_records(df: pd.DataFrame) -> pd.DataFrame:
 
     normalized = normalized[RAW_COLUMNS].copy()
     normalized["date"] = pd.to_datetime(normalized["date"], errors="coerce").dt.date
-    normalized["wake_time"] = normalized["wake_time"].astype(str).str.strip()
-    normalized["sleep_time"] = normalized["sleep_time"].astype(str).str.strip()
+    normalized["wake_time"] = normalized["wake_time"].map(normalize_clock_time)
+    normalized["sleep_time"] = normalized["sleep_time"].map(normalize_clock_time)
     normalized["momentum"] = pd.to_numeric(normalized["momentum"], errors="coerce")
     normalized["disturbance"] = pd.to_numeric(normalized["disturbance"], errors="coerce")
     normalized["sleep_medication"] = normalized["sleep_medication"].fillna(False).astype(bool)
+    normalized["awake_minutes"] = pd.to_numeric(normalized["awake_minutes"], errors="coerce")
+    normalized["awake_unknown"] = normalized["awake_unknown"].map(lambda value: str(value).lower() in {"true", "1"})
+    if normalized["awake_minutes"].isna().any():
+        raise ValueError("Invalid awake minutes")
 
-    if normalized[["date", "wake_time", "sleep_time", "momentum", "disturbance"]].isna().any().any():
+    if normalized[["date", "wake_time", "sleep_time", "disturbance"]].isna().any().any() or (normalized["momentum"].isna() & normalized["sleep_time"].ne(normalized["wake_time"])).any():
         raise ValueError(_("err_raw_invalid"))
 
     normalized["date"] = normalized["date"].astype(str)
-    normalized["momentum"] = normalized["momentum"].astype(int)
+    normalized["momentum"] = normalized["momentum"].astype("Int64")
     normalized["disturbance"] = normalized["disturbance"].astype(int)
     return normalized
 
@@ -790,6 +945,7 @@ def rebuild_persisted_records(raw_df: pd.DataFrame, params: dict):
         params["attractor_p_limit"],
         params["attractor_d_limit"],
         ATTRACTOR_DAYS,
+        params["routine_wake_tau_hours"],
     )
     daily_summary = dynamics.build_daily_summary_frame(
         derived,
@@ -803,6 +959,7 @@ def rebuild_persisted_records(raw_df: pd.DataFrame, params: dict):
         params["attractor_p_limit"],
         params["attractor_d_limit"],
         ATTRACTOR_DAYS,
+        params["routine_wake_tau_hours"],
     )
 
     if derived.empty:
@@ -825,11 +982,11 @@ def rebuild_persisted_records(raw_df: pd.DataFrame, params: dict):
 
 
 def save_records_frame(df: pd.DataFrame, create_backup: bool = False, path: str = DATA_FILE):
+    if os.path.exists(path):
+        stored_versions = pd.read_csv(path, usecols=lambda name: name == "schema_version")
+        create_backup = create_backup or (not stored_versions.empty and bool((pd.to_numeric(stored_versions.get("schema_version"), errors="coerce") != CURRENT_SCHEMA_VERSION).any()))
     if create_backup and os.path.exists(path):
-        os.makedirs(BACKUP_DIR, exist_ok=True)
-        backup_name = datetime.now().strftime("records_backup_%Y%m%d_%H%M%S.csv")
-        shutil.copy2(path, os.path.join(BACKUP_DIR, backup_name))
-        keep_recent_backups()
+        create_record_backup(path, BACKUP_DIR, retention_count=BACKUP_RETENTION_COUNT)
 
     write_records_frame(df, path)
 
@@ -852,11 +1009,14 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
         params["attractor_p_limit"],
         params["attractor_d_limit"],
         ATTRACTOR_DAYS,
+        params["routine_wake_tau_hours"],
     )
 
     if daily_summary.empty:
         return daily_view, daily_summary, pd.DataFrame()
 
+    pressure_frame = sleep_pressure.build_sleep_pressure_frame(daily_view, daily_summary)
+    daily_summary = daily_summary.merge(pressure_frame, on="rhythm_day", how="left")
     summary_lookup = daily_summary.set_index("rhythm_day")
     daily_points_rows = []
     for rhythm_day in daily_summary["rhythm_day"].tolist():
@@ -875,7 +1035,7 @@ def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
             else:
                 representative = current_bucket.sort_values(["sleep_hours", "row_order"], ascending=[False, False]).iloc[0]
         point_row = representative.copy()
-        for column in ["P", "D", "H", "in_attractor", "disturbance", "recovery_days", "sleep_hours", "session_count"]:
+        for column in ["P", "D", "H", "routine_stability", "in_attractor", "disturbance", "recovery_days", "sleep_hours", "session_count", "observation_status", "sleep_duration_known", "state_estimated", "S", "S_low", "S_high", "pressure_at"]:
             point_row[column] = summary_lookup.loc[rhythm_day, column]
         daily_points_rows.append(point_row)
 
@@ -897,6 +1057,10 @@ def recommendation_context_key(profile_id, current_state, candidate, context_gen
         *state_values,
     ]
     return "recommendation:" + ":".join(candidate_values)
+
+
+def decision_id_for_context(context_key):
+    return "decision:" + hashlib.sha256(context_key.encode("utf-8")).hexdigest()[:24]
 
 
 def recommendation_selector_key(profile_id, current_state, candidates, context_generation=0):
@@ -925,15 +1089,43 @@ def initialize_recommendation_draft_state(state, context_key, candidate, target_
             state[key] = values[name]
     return keys
 
-@st.cache_data(show_spinner=False)
-def build_empirical_status_report(daily_summary_frame, daily_view_frame, intervention_frame):
-    daily_observations = build_daily_observation_frame(daily_summary_frame, daily_view_frame)
-    return system_identification_report(daily_observations, intervention_frame)
+
+def localized_action_name(action_type):
+    action_key = f"action_{action_type}"
+    return _(action_key) if action_key in L[st.session_state.lang] else action_type
 
 
+def normalize_daily_entry_times():
+    for key in ("daily_sleep_time", "daily_wake_time"):
+        normalized = normalize_clock_time(st.session_state.get(key))
+        if normalized is not None:
+            st.session_state[key] = normalized
 
 
-
+def build_today_direction(daily_summary, observer, p_limit, d_limit):
+    if daily_summary.empty:
+        return _("today_state_empty")
+    recent = daily_summary.sort_values("rhythm_day").tail(7)
+    routine_values = pd.to_numeric(recent.get("routine_stability", pd.Series(dtype=float)), errors="coerce").dropna()
+    if routine_values.empty:
+        routine = _("today_routine_unknown")
+    elif float(routine_values.mean()) >= 0.75:
+        routine = _("today_routine_stable")
+    else:
+        routine = _("today_routine_variable")
+    p_value = observer.get("P")
+    if p_value is None or pd.isna(p_value):
+        return _("today_state_phase_unknown", routine=routine)
+    phase_value = float(p_value)
+    if abs(phase_value) < float(p_limit):
+        phase = _("today_phase_target")
+    elif phase_value > 0:
+        phase = _("today_phase_late", hours=f"{abs(phase_value):.1f}")
+    else:
+        phase = _("today_phase_early", hours=f"{abs(phase_value):.1f}")
+    debt_value = observer.get("D")
+    debt = _("today_debt_high") if debt_value is not None and pd.notna(debt_value) and float(debt_value) >= float(d_limit) else _("today_debt_controlled")
+    return _("today_state_summary", routine=routine, phase=phase, debt=debt)
 
 def build_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limit: float):
     if daily_points.empty:
@@ -947,10 +1139,16 @@ def build_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limi
         return None
     qualifying = ordered["P"].notna() & ordered["D"].notna() & (ordered["P"].abs() < p_limit) & (ordered["D"] < d_limit)
     streak = 0
-    for is_qualifying in qualifying.iloc[::-1]:
+    next_day = None
+    for index in range(len(ordered) - 1, -1, -1):
+        is_qualifying = qualifying.iloc[index]
+        current_day = ordered.iloc[index]["rhythm_day"]
         if not bool(is_qualifying):
             break
+        if next_day is not None and next_day - current_day != pd.Timedelta(days=1):
+            break
         streak += 1
+        next_day = current_day
     valid = ordered.dropna(subset=["P", "D"])
     latest = ordered.iloc[-1]
     context = {
@@ -969,7 +1167,7 @@ def build_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_limi
     context["debt_margin"] = d_limit - float(latest["D"])
     if len(ordered) >= 2:
         previous = ordered.iloc[-2]
-        if pd.notna(previous["P"]) and pd.notna(previous["D"]):
+        if phase_step_is_contiguous(previous, latest, circular=True):
             context["phase_progress"] = abs(float(previous["P"])) - abs(float(latest["P"]))
             context["debt_progress"] = float(previous["D"]) - float(latest["D"])
     return context
@@ -979,6 +1177,15 @@ def render_phase_space_context(daily_points: pd.DataFrame, p_limit: float, d_lim
     context = build_phase_space_context(daily_points, p_limit, d_limit)
     if context is None:
         return
+    chinese = st.session_state.lang != "en"
+    record_day = context["current_day"].date()
+    st.caption(f"记录截至 {record_day} · 相图反映该日的记录状态" if chinese else f"Records through {record_day} · The chart reflects that recorded day")
+    age = (date.today() - record_day).days
+    if age > 1:
+        st.info(f"最新记录距今天 {age} 天，不能据此确认今天的作息状态。" if chinese else f"The latest record is {age} days old; today's routine is not established by this chart.")
+    latest_point = daily_points.sort_values("rhythm_day").iloc[-1]
+    if bool(latest_point.get("state_estimated", False)):
+        st.warning("含未知睡眠时长：相图中的状态是估计值。" if chinese else "Unknown sleep duration in history: plotted states are estimates.")
     if not context["current_plottable"]:
         latest_day = context["latest_valid_day"]
         if latest_day is not None:
@@ -1070,18 +1277,19 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     for zone_x, zone_y, zone_text in zone_labels:
         fig.add_annotation(
             x=zone_x, y=zone_y, text=zone_text, showarrow=False,
-            font=dict(size=10, color="#666666"), opacity=0.8,
+            font=dict(size=11),
         )
 
+    trajectory_line = build_phase_line_frame(plot_frame)
     fig.add_trace(go.Scatter(
-        x=p_vals,
-        y=d_vals,
+        x=trajectory_line["P"],
+        y=trajectory_line["D"],
         mode="lines",
         line=dict(color="#9ca3af", width=1.5),
         showlegend=False,
         hoverinfo="skip",
     ))
-    tail = plot_frame.tail(7)
+    tail = build_phase_line_frame(plot_frame[plot_frame["rhythm_day"] >= latest_day - pd.Timedelta(days=6)])
     fig.add_trace(go.Scatter(
         x=tail["P"],
         y=tail["D"],
@@ -1090,7 +1298,7 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
         showlegend=False,
         hoverinfo="skip",
     ))
-    if n >= 2:
+    if n >= 2 and latest_is_current and phase_step_is_contiguous(plot_frame.iloc[-2], plot_frame.iloc[-1]):
         fig.add_annotation(
             x=p_vals[-1], y=d_vals[-1], ax=p_vals[-2], ay=d_vals[-2],
             xref="x", yref="y", axref="x", ayref="y",
@@ -1171,7 +1379,7 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     for recovery_index, point in recovery_points.iterrows():
         fig.add_annotation(
             x=point["P"], y=point["D"], text=f"R={int(point['recovery_days'])}d",
-            showarrow=False, yshift=14, font=dict(size=10, color="#7f1d1d"),
+            showarrow=False, yshift=14, font=dict(size=11),
         )
 
     latest = plot_frame.iloc[-1]
@@ -1188,7 +1396,7 @@ def draw_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: float, 
     ))
 
     fig.update_layout(
-        title=dict(text=_("chart_phase_title"), x=0.02, xanchor="left", font=dict(color="#e5e7eb", size=18)),
+        title=dict(text=_("chart_phase_title"), x=0.02, xanchor="left", font=dict(size=18)),
         xaxis_title=_("chart_p_axis"),
         yaxis_title=_("chart_d_axis"),
         showlegend=True,
@@ -1240,15 +1448,16 @@ def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: f
         showlegend=False,
         hoverinfo="skip",
     ))
+    trajectory_line = build_phase_line_frame(plot_frame, circular=True)
     fig.add_trace(go.Scatterpolar(
-        theta=theta_vals,
-        r=radial_vals,
+        theta=trajectory_line["P"] * 15.0,
+        r=trajectory_line["D"],
         mode="lines",
         line=dict(color="#9ca3af", width=1.5),
         showlegend=False,
         hoverinfo="skip",
     ))
-    tail = plot_frame.tail(7)
+    tail = build_phase_line_frame(plot_frame[plot_frame["rhythm_day"] >= latest_day - pd.Timedelta(days=6)], circular=True)
     fig.add_trace(go.Scatterpolar(
         theta=tail["P"].to_numpy() * 15.0,
         r=tail["D"],
@@ -1342,7 +1551,7 @@ def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: f
     ))
 
     fig.update_layout(
-        title=dict(text=_("chart_polar_title"), x=0.02, xanchor="left", font=dict(color="#e5e7eb", size=18)),
+        title=dict(text=_("chart_polar_title"), x=0.02, xanchor="left", font=dict(size=18)),
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0, font=dict(size=10)),
         hovermode="closest",
@@ -1359,14 +1568,12 @@ def draw_polar_state_trajectory(daily_points: pd.DataFrame, attractor_p_limit: f
                 ticktext=["0h", "+3h", "+6h", "+9h", "±12h", "-9h", "-6h", "-3h"],
                 gridcolor="#4b5563",
                 linecolor="#6b7280",
-                tickfont=dict(color="#e5e7eb"),
             ),
             radialaxis=dict(
                 autorange=True,
                 rangemode="tozero",
                 gridcolor="#374151",
                 linecolor="#6b7280",
-                tickfont=dict(color="#d1d5db"),
             ),
         ),
     )
@@ -1410,25 +1617,22 @@ def build_rhythm_observation(p, d, h, p_limit, d_limit):
         d=f"{float(d):.2f}",
         h=f"{float(h):.3f}",
     )
-def build_habit_observation(daily_points: pd.DataFrame, daily_summary: pd.DataFrame, target_wake: str):
+def build_habit_observation(daily_points: pd.DataFrame, daily_summary: pd.DataFrame):
     if daily_points.empty or daily_summary.empty:
         return {
-            "wake": "N/A",
-            "wake_state": _("habit_variable"),
+            "routine": "N/A",
+            "routine_state": _("habit_variable"),
             "lock": "0",
             "disturbances": "0",
             "trend": _("habit_stable"),
             "recovery": _("recovery_none"),
         }
-    recent_points = daily_points.sort_values("rhythm_day").tail(7)
-    wake_values = pd.to_datetime(recent_points["wake_time"], format="%H:%M", errors="coerce")
-    wake_hours = wake_values.dt.hour + wake_values.dt.minute / 60.0
-    target = datetime.strptime(target_wake, "%H:%M").hour + datetime.strptime(target_wake, "%H:%M").minute / 60.0
-    deviations = ((wake_hours - target + 12.0) % 24.0) - 12.0
-    valid_deviations = deviations.dropna()
-    mean_deviation = float(valid_deviations.abs().mean()) if not valid_deviations.empty else None
-    wake_state = _("habit_consistent") if mean_deviation is not None and mean_deviation <= 0.5 else _("habit_variable")
-    wake_display = f"{mean_deviation:.1f}h" if mean_deviation is not None else "N/A"
+    recent_summary = daily_summary.sort_values("rhythm_day").tail(7)
+    routine_column = recent_summary["routine_stability"] if "routine_stability" in recent_summary else pd.Series(dtype=float)
+    routine_values = pd.to_numeric(routine_column, errors="coerce").dropna()
+    routine_score = float(routine_values.mean()) if not routine_values.empty else None
+    routine_state = _("habit_consistent") if routine_score is not None and routine_score >= 0.75 else _("habit_variable")
+    routine_display = f"{routine_score:.0%}" if routine_score is not None else "N/A"
     lock_streak = 0
     for is_inside in daily_summary.sort_values("rhythm_day")["in_attractor"].iloc[::-1]:
         if not bool(is_inside):
@@ -1445,8 +1649,8 @@ def build_habit_observation(daily_points: pd.DataFrame, daily_summary: pd.DataFr
     else:
         habit_trend = _("habit_falling")
     return {
-        "wake": wake_display,
-        "wake_state": wake_state,
+        "routine": routine_display,
+        "routine_state": routine_state,
         "lock": str(lock_streak),
         "disturbances": str(disturbance_count),
         "trend": habit_trend,
@@ -1493,104 +1697,33 @@ def check_convergence(summary_df, p_limit, d_limit):
     return "diverging"
 
 
-def filter_points_by_range(daily_points: pd.DataFrame, range_label: str):
-    if daily_points.empty:
-        return daily_points
-    filtered = daily_points.copy()
-    filtered["rhythm_day"] = pd.to_datetime(filtered["rhythm_day"], errors="coerce")
-    latest_date = filtered["rhythm_day"].dt.date.max()
-    if pd.isna(latest_date):
-        return filtered
-
-    if range_label == "All":
-        return filtered.sort_values("rhythm_day")
-
-    range_map = {
-        "7D": 7,
-        "30D": 30,
-        "90D": 90,
-    }
-    days = range_map.get(range_label)
-    if days is None:
-        return filtered.sort_values("rhythm_day")
-    start_date = latest_date - timedelta(days=days - 1)
-    return filtered[(filtered["rhythm_day"].dt.date >= start_date) & (filtered["rhythm_day"].dt.date <= latest_date)].sort_values("rhythm_day")
-
-
 def plot_core_trend_charts(daily_points: pd.DataFrame, range_label: str):
-    filtered = filter_points_by_range(daily_points, range_label)
-    if filtered.empty:
+    if daily_points.empty:
         st.info(_("info_no_trend_data"))
         return
 
-    chart_frame = filtered.copy()
-    chart_frame["rhythm_day"] = pd.to_datetime(chart_frame["rhythm_day"], errors="coerce")
-    chart_frame = chart_frame.dropna(subset=["rhythm_day"])
-    if chart_frame.empty:
+    fig = build_core_trend_figure(
+        daily_points,
+        range_label,
+        {
+            "chart_wake": _("chart_wake"),
+            "chart_sleep_debt": _("chart_sleep_debt"),
+            "chart_habit": _("chart_habit"),
+            "chart_routine_stability": _("chart_routine_stability"),
+            "chart_date": _("chart_date"),
+            "chart_title": _("chart_title"),
+        },
+    )
+    if fig is None:
         st.info(_("info_no_trend_dates"))
         return
-
-    def clock_to_decimal(value):
-        if not isinstance(value, str) or not validate_time_string(value):
-            return pd.NA
-        parsed = datetime.strptime(value, "%H:%M")
-        return parsed.hour + parsed.minute / 60.0
-
-    chart_frame["wake_clock_hour"] = chart_frame["wake_time"].apply(clock_to_decimal)
-    chart_frame = chart_frame.sort_values("rhythm_day")
-
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08)
-
-    fig.add_trace(go.Scatter(
-        x=chart_frame["rhythm_day"], y=chart_frame["wake_clock_hour"],
-        mode="lines+markers", marker=dict(color="#1d3557", size=6),
-        line=dict(color="#1d3557", width=2),
-        name=_("chart_wake"),
-        hovertemplate=(
-            "<b>%{x|%Y-%m-%d}</b><br>"
-            f"{_('chart_wake')}: %{{y:.1f}}<br>"
-            "HH:MM: %{customdata}<extra></extra>"
-        ),
-        customdata=chart_frame["wake_time"],
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=chart_frame["rhythm_day"], y=chart_frame["D"],
-        mode="lines+markers", marker=dict(color="#457b9d", size=6),
-        line=dict(color="#457b9d", width=2),
-        name=_("chart_sleep_debt"),
-        hovertemplate=(
-            "<b>%{x|%Y-%m-%d}</b><br>"
-            f"{_('chart_sleep_debt')}: %{{y:.2f}} h<extra></extra>"
-        ),
-    ), row=2, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=chart_frame["rhythm_day"], y=chart_frame["H"],
-        mode="lines+markers", marker=dict(color="#2a9d8f", size=6),
-        line=dict(color="#2a9d8f", width=2),
-        name=_("chart_habit"),
-        hovertemplate=(
-            "<b>%{x|%Y-%m-%d}</b><br>"
-            f"{_('chart_habit')}: %{{y:.3f}}<extra></extra>"
-        ),
-    ), row=3, col=1)
-
-    fig.update_yaxes(title_text=_("chart_wake"), row=1, col=1)
-    fig.update_yaxes(title_text=_("chart_sleep_debt"), row=2, col=1)
-    fig.update_yaxes(title_text=_("chart_habit"), row=3, col=1)
-    fig.update_xaxes(title_text=_("chart_date"), row=3, col=1)
-
-    fig.update_layout(
-        title=_("chart_title", range=range_label),
-        showlegend=False,
-        height=600,
-        margin=dict(l=50, r=20, t=50, b=50),
-    )
     st.plotly_chart(fig, width="stretch")
 
 
 
+if "language_preference_loaded" not in st.session_state:
+    st.session_state.lang = load_ui_settings()["lang"]
+    st.session_state.language_preference_loaded = True
 st.title(_("title"))
 st.write(_("subtitle"))
 st.caption(_("caption_naps"))
@@ -1598,9 +1731,9 @@ st.caption(_("caption_naps"))
 
 def initialize_test_parameter_state():
     if "test_target_wake" not in st.session_state:
-        st.session_state.test_target_wake = datetime.strptime(config["target_wake"], "%H:%M").time()
+        st.session_state.test_target_wake = datetime.strptime(load_ui_settings()["target_wake"], "%H:%M").time()
     if "test_sleep_need_hours" not in st.session_state:
-        st.session_state.test_sleep_need_hours = float(config["sleep_need_hours"])
+        st.session_state.test_sleep_need_hours = float(load_ui_settings()["sleep_need_hours"])
     if "test_lambda_d" not in st.session_state:
         st.session_state.test_lambda_d = float(config["lambda_d"])
     if "test_alpha_up" not in st.session_state:
@@ -1621,11 +1754,12 @@ def get_active_parameters():
     return {
         "target_wake": st.session_state.get("test_target_wake", datetime.strptime(config["target_wake"], "%H:%M").time()).strftime("%H:%M"),
         "sleep_need_hours": float(st.session_state.get("test_sleep_need_hours", config["sleep_need_hours"])),
-        "lambda_d": float(st.session_state.get("test_lambda_d", config["lambda_d"])),
-        "alpha_up": float(st.session_state.get("test_alpha_up", config["alpha_up"])),
-        "alpha_down": float(st.session_state.get("test_alpha_down", config["alpha_down"])),
-        "recovery_k": float(st.session_state.get("test_recovery_k", config["recovery_k"])),
-        "recovery_saturation_tau": float(st.session_state.get("test_recovery_saturation_tau", config["recovery_saturation_tau"])),
+        "lambda_d": float(config["lambda_d"]),
+        "alpha_up": float(config["alpha_up"]),
+        "alpha_down": float(config["alpha_down"]),
+        "routine_wake_tau_hours": float(config.get("routine_wake_tau_hours", dynamics.ROUTINE_WAKE_TAU_HOURS)),
+        "recovery_k": float(config["recovery_k"]),
+        "recovery_saturation_tau": float(config["recovery_saturation_tau"]),
         "attractor_p_limit": attractor_settings["attractor_p_limit"],
         "attractor_d_limit": attractor_settings["attractor_d_limit"],
         "target_utc_offset": attractor_settings["target_utc_offset"],
@@ -1649,6 +1783,7 @@ with st.sidebar:
     )
     if selected_lang != st.session_state.lang:
         st.session_state.lang = selected_lang
+        save_ui_settings(ui_settings["attractor_p_limit"], ui_settings["attractor_d_limit"], ui_settings["target_utc_offset"], ui_settings["profile_id"])
         st.rerun()
 
     selected_profile_id = st.selectbox(
@@ -1662,22 +1797,13 @@ with st.sidebar:
     if is_sample_profile:
         st.caption(_("profile_read_only"))
 
-    st.subheader(_("attractor_settings"))
-    attractor_p_limit = st.number_input(
-        _("attractor_p_limit"), min_value=0.1, max_value=12.0,
-        value=ui_settings["attractor_p_limit"], step=0.1,
-    )
-    attractor_d_limit = st.number_input(
-        _("attractor_d_limit"), min_value=0.1, max_value=24.0,
-        value=ui_settings["attractor_d_limit"], step=0.1,
-    )
-    target_utc_offset = st.number_input(
-        _("target_utc_offset"), min_value=-12.0, max_value=14.0,
-        value=ui_settings["target_utc_offset"], step=0.25,
-        help=_("target_utc_offset_help"),
-    )
-    st.caption(_("attractor_heuristic"))
-    st.markdown("[{}](https://github.com/Hyperbolica-dev/MDRM)".format(_("copyright")))
+    st.subheader("我的节律目标" if st.session_state.lang != "en" else "My schedule target")
+    st.time_input(_("test_target_wake"), key="test_target_wake")
+    st.number_input("睡眠时长参照（小时）" if st.session_state.lang != "en" else "Sleep duration reference (hours)", min_value=1.0, max_value=16.0, step=0.25, key="test_sleep_need_hours")
+    st.caption("只设置希望几点起床和睡眠时长参照。相位与漂移自动计算；内部模型常数不是你的调参任务。" if st.session_state.lang != "en" else "Choose your wake target and sleep reference. Phase and drift are calculated automatically.")
+    attractor_p_limit = float(config.get("attractor_p_limit", 1.0))
+    attractor_d_limit = float(config.get("attractor_d_limit", 5.0))
+    target_utc_offset = ui_settings["target_utc_offset"]
 previous_profile_id = st.session_state.get("_recommendation_profile_id")
 if previous_profile_id is None:
     recommendation_context_generation = 0
@@ -1694,6 +1820,8 @@ if (
     or attractor_d_limit != ui_settings["attractor_d_limit"]
     or target_utc_offset != ui_settings["target_utc_offset"]
     or selected_profile_id != ui_settings["profile_id"]
+    or st.session_state.test_target_wake.strftime("%H:%M") != ui_settings["target_wake"]
+    or st.session_state.test_sleep_need_hours != ui_settings["sleep_need_hours"]
 ):
     save_ui_settings(attractor_p_limit, attractor_d_limit, target_utc_offset, selected_profile_id)
 
@@ -1708,179 +1836,18 @@ active_params["target_utc_offset"] = target_utc_offset
 records_frame = load_records_frame(active_data_file)
 daily_view, daily_summary, daily_points = get_daily_state_frames(records_frame, active_params)
 
-st.subheader(_("dashboard_title"))
 if daily_summary.empty:
-    observer = {"P": 0.0, "D": 0.0, "H": 1.0, "in_attractor": 0, "rhythm_day": None}
+    observer = {"P": None, "D": None, "H": None, "in_attractor": None, "rhythm_day": None}
 else:
     observer = daily_summary.iloc[-1].to_dict()
 
-biological_utc_offset = dynamics.estimate_biological_utc_offset(
-    daily_summary["P"].tolist() if not daily_summary.empty else [],
-    target_utc_offset,
-)
-dashboard_col1, dashboard_col2, dashboard_col3 = st.columns(3)
-with dashboard_col1:
-    p_val = observer.get("P")
-    p_display = f"{p_val:.2f} h" if pd.notna(p_val) else "N/A"
-    st.metric(_("metric_p"), p_display)
-with dashboard_col2:
-    st.metric(_("metric_d"), f"{float(observer.get('D', 0.0)):.2f} h")
-with dashboard_col3:
-    st.metric(_("metric_h"), f"{float(observer.get('H', 1.0)):.3f}")
-dashboard_col4, dashboard_col5 = st.columns(2)
-with dashboard_col4:
-    status_label = _("label_inside") if int(observer.get("in_attractor", 0)) == 1 else _("label_outside")
-    st.metric(_("metric_attractor"), status_label)
-with dashboard_col5:
-    st.metric(_("metric_biological_utc"), format_utc_offset(biological_utc_offset))
-
-add_attractor_status_label(bool(observer.get("in_attractor", 0)))
-st.subheader(_("observation_title"))
-observation_p = observer.get("P") if not daily_summary.empty else None
-st.info(
-    build_rhythm_observation(
-        observation_p,
-        observer.get("D"),
-        observer.get("H"),
-        attractor_p_limit,
-        attractor_d_limit,
-    )
-)
-habit_observation = build_habit_observation(daily_points, daily_summary, active_params["target_wake"])
-st.subheader(_("habit_observation_title"))
-habit_col1, habit_col2, habit_col3, habit_col4 = st.columns(4)
-with habit_col1:
-    st.metric(_("habit_wake_consistency"), habit_observation["wake"], habit_observation["wake_state"])
-with habit_col2:
-    st.metric(_("habit_lock_streak"), habit_observation["lock"])
-with habit_col3:
-    st.metric(_("habit_disturbances"), habit_observation["disturbances"])
-with habit_col4:
-    st.metric(_("habit_trend"), habit_observation["trend"])
-st.caption(f"{_('recovery_title')}: {habit_observation['recovery']}")
-
-st.subheader(_("live_title"))
-st.caption(_("live_caption"))
-last_wake = daily_view["wake_end_dt"].max() if not daily_view.empty else None
-target_local_time = (
-    datetime.now(timezone.utc) + timedelta(hours=target_utc_offset)
-).replace(tzinfo=None)
-live_state = dynamics.calculate_live_state(
-    last_wake,
-    target_local_time,
-    active_params["target_wake"],
-    active_params["sleep_need_hours"],
-    float(observer.get("D", 0.0)),
-)
-if live_state is None:
-    st.info(_("live_no_data"))
-else:
-    live_col1, live_col2 = st.columns(2)
-    with live_col1:
-        st.metric(_("live_current_time"), live_state["current_time"].strftime("%Y-%m-%d %H:%M"))
-    with live_col2:
-        st.metric(_("live_awake"), f"{live_state['assumed_awake_hours']:.1f} h")
-    live_col3, live_col4 = st.columns(2)
-    with live_col3:
-        st.metric(_("live_missed_sleep"), f"{live_state['missed_sleep_hours']:.1f} h")
-    with live_col4:
-        st.metric(_("live_projected_debt"), f"{live_state['projected_debt']:.1f} h")
-
-if not daily_points.empty:
-    latest_point = daily_points.sort_values("rhythm_day").iloc[-1]
-    p_val = latest_point.get("P")
-    wake_val = latest_point.get("wake_time")
-    sleep_val = latest_point.get("sleep_hours")
-    if pd.notna(p_val) and wake_val and sleep_val and sleep_val > 0:
-        cbt_min = dynamics.estimate_cbt_min(str(wake_val), float(sleep_val))
-        deadband = 0.5
-        st.markdown("---")
-        lc1, lc2 = st.columns(2)
-        def _fmt(h):
-            h24 = h + 24 if h < 0 else h
-            hh = int(h24)
-            mm = int(round((h24 - hh) * 60))
-            if mm == 60:
-                hh += 1
-                mm = 0
-            return f"{hh % 24:02d}:{mm:02d}"
-        lc1.metric(_("cbt_min"), _fmt(cbt_min), help=_("cbt_min_help"))
-        if not dynamics.can_recommend_light(p_val):
-            lc2.warning(_("light_uncertain"))
-            st.info(f"**{_('non_light_title')}**\n\n{_('non_light_guidance')}")
-        elif abs(p_val) > deadband:
-            scale = min(1.0, (abs(p_val) - deadband) / 2.0)
-            offset = 3.0 * scale
-            light_hour = cbt_min + offset if p_val > 0 else cbt_min - offset
-            lc2.metric(_("light_window"), f"{_fmt(light_hour - 0.5)} - {_fmt(light_hour + 0.5)}", help=_("light_window_help"))
-        else:
-            lc2.success(_("light_deadband"))
-    else:
-        st.info(_("light_no_data"))
-if daily_points.empty:
-    st.info(_("info_no_records"))
-else:
-    st.caption(_("caption_trajectory"))
-    trajectory_ranges = ["7D", "14D", "30D", "All"]
-    selected_trajectory_range = st.radio(
-        _("trajectory_range"),
-        trajectory_ranges,
-        index=1,
-        horizontal=True,
-    )
-    trajectory_points = filter_phase_space_points(daily_points, selected_trajectory_range)
-    render_phase_space_context(daily_points, attractor_p_limit, attractor_d_limit)
-    use_polar = st.checkbox(_("polar_toggle"), value=DEFAULT_POLAR_VIEW)
-    with st.expander(_("phase_3d_title"), expanded=False):
-        st.caption(_("phase_3d_caption"))
-        phase_3d_figure = build_phase_space_3d_figure(trajectory_points)
-        if phase_3d_figure is None:
-            st.info(_("info_no_pd_points"))
-        else:
-            st.plotly_chart(phase_3d_figure, width="stretch", config={"displaylogo": False})
-    if use_polar:
-        st.caption(_("caption_polar_trajectory"))
-        draw_polar_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
-    else:
-        draw_state_trajectory(trajectory_points, attractor_p_limit, attractor_d_limit)
-
-    diag_label_key, diag_color = diagnose_attractor_state(
-        observer.get("P"), observer.get("D"), attractor_p_limit, attractor_d_limit
-    )
-    conv_key = check_convergence(daily_summary, attractor_p_limit, attractor_d_limit)
-
-    st.markdown("---")
-    diag_col1, diag_col2 = st.columns(2)
-    with diag_col1:
-        st.markdown(
-            f"<div style='color:#e0e0e0;padding:8px 12px;"
-            f"border-left:4px solid {diag_color};"
-            f"font-weight:600;font-size:1rem;'>{_(diag_label_key)}</div>",
-            unsafe_allow_html=True,
-        )
-    with diag_col2:
-        st.markdown(
-            f"<div style='color:#e0e0e0;padding:8px 12px;"
-            f"border-left:4px solid #8899aa;"
-            f"font-weight:500;font-size:1rem;'>{_(conv_key)}</div>",
-            unsafe_allow_html=True,
-        )
-
-    with st.expander(_("guide_title"), expanded=False):
-        st.markdown(_("guide_content"))
-
-st.subheader(_("charts_title"))
-range_choice = st.selectbox(_("time_range"), ["7D", "30D", "90D", "All"], index=1)
-plot_core_trend_charts(daily_points, range_choice)
 latest_recommendation_point = daily_points.sort_values("rhythm_day").iloc[-1] if not daily_points.empty else None
-recommendation_state = observer.copy()
-if daily_summary.empty:
-    recommendation_state["P"] = None
+recommendation_state = {**observer, "D": None}
 recommendation_cbt_min = None
 if latest_recommendation_point is not None:
     recommendation_sleep = latest_recommendation_point.get("sleep_hours")
     recommendation_wake = latest_recommendation_point.get("wake_time")
-    if recommendation_wake and pd.notna(recommendation_sleep) and float(recommendation_sleep) > 0:
+    if recommendation_wake and pd.notna(recommendation_sleep) and float(recommendation_sleep) > 0 and bool(observer.get("sleep_duration_known", True)):
         recommendation_cbt_min = dynamics.estimate_cbt_min(str(recommendation_wake), float(recommendation_sleep))
 recommendation_candidates = build_recommendation_candidates(
     recommendation_state,
@@ -1891,74 +1858,377 @@ recommendation_candidates = build_recommendation_candidates(
     d_limit=attractor_d_limit,
     cbt_min=recommendation_cbt_min,
 )
-learning_interventions = empty_intervention_frame() if is_sample_profile else load_interventions()
-with st.expander(_("empirical_title"), expanded=False):
-    st.caption(_("empirical_caption"))
-    empirical_report = build_empirical_status_report(daily_summary, daily_view, learning_interventions)
-    validation_report = empirical_report["short_history"]
-    action_report = empirical_report["action_coverage"]
 
-    st.markdown(f"**{_('empirical_data_status')}**")
-    data_col1, data_col2 = st.columns(2)
-    data_col1.metric(_("empirical_transitions"), str(empirical_report["state_only"]["usable_transitions"]))
-    data_col2.metric(_("empirical_interventions"), str(action_report["executed_interventions"]))
-    action_types = ", ".join(action_report["action_types"]) if action_report["action_types"] else _("empirical_none")
-    data_col3, data_col4 = st.columns(2)
-    data_col3.metric(_("empirical_action_types"), action_types)
-    validation_label = _("empirical_yes") if validation_report["chronological_validation_available"] else _("empirical_no")
-    data_col4.metric(_("empirical_validation"), validation_label)
+st.markdown("<style>[data-stale=true]{opacity:1!important} [data-testid=stAppViewContainer] *{animation-duration:0s!important;transition-duration:0s!important}</style>", unsafe_allow_html=True)
+st.header(_("today_title"))
+recorded_day_statuses = classify_entry_dates(
+    daily_summary,
+    records_frame,
+    daily_view,
+    p_limit=attractor_p_limit,
+)
+calendar_css = build_date_input_calendar_css(recorded_day_statuses)
+if calendar_css:
+    st.markdown(calendar_css, unsafe_allow_html=True)
+receipt_key = f"sleep_receipt:{selected_profile_id}"
+chinese_entry = st.session_state.lang != "en"
+calendar_column, entry_column = st.columns([1, 1.2])
+with calendar_column:
+    with st.container(key="entry_calendar"):
+        selected_entry_day = render_entry_calendar(records_frame, recorded_day_statuses, selected_profile_id, chinese_entry)
+with entry_column:
+    render_daily_overview(daily_points, observer, chinese_entry)
+    entry_slot = st.container()
+selected_date_mask = records_frame["date"].astype(str).eq(str(selected_entry_day))
+selected_records = records_frame.loc[selected_date_mask, RAW_COLUMNS].copy()
+if not selected_records.empty:
+    st.markdown(f"**{selected_entry_day} · {'已有记录（可修改）' if chinese_entry else 'Existing records (editable)'}**")
+    corrected_records = st.data_editor(
+        selected_records,
+        key=f"entry_corrections:{selected_profile_id}:{selected_entry_day}:{hash(selected_records.to_csv(index=False))}",
+        hide_index=True,
+        num_rows="fixed",
+        disabled=True if is_sample_profile else ["date"],
+        column_config={
+            "sleep_time": st.column_config.TextColumn(_("form_sleep_time")),
+            "wake_time": st.column_config.TextColumn(_("form_wake_time")),
+            "momentum": st.column_config.NumberColumn(_("form_momentum"), min_value=0, max_value=10),
+        },
+    )
+    if st.button("保存该日修改" if chinese_entry else "Save corrections for this date", disabled=is_sample_profile):
+        try:
+            current_records = load_records_frame(active_data_file)
+            if not current_records.equals(records_frame):
+                raise ValueError("Records changed; refresh before editing.")
+            normalized_corrections = normalize_raw_records(corrected_records)
+            normalized_originals = normalize_raw_records(selected_records)
+            changed_rows = normalized_corrections.ne(normalized_originals).any(axis=1)
+            positive_windows = normalized_corrections["sleep_time"].ne(normalized_corrections["wake_time"])
+            original_positive_windows = normalized_originals["sleep_time"].ne(normalized_originals["wake_time"])
+            if bool((changed_rows & ~positive_windows & original_positive_windows).any()):
+                raise ValueError("零睡眠请使用通宵入口 / Use the no-sleep option for zero sleep")
+            untouched_records = current_records.drop(index=normalized_corrections.index[changed_rows])
+            untouched_sleep = untouched_records[untouched_records["sleep_time"].ne(untouched_records["wake_time"])]
+            validate_sleep_windows(normalized_corrections.loc[changed_rows & positive_windows], untouched_sleep, allow_long=True)
+            corrected_frame = current_records.copy()
+            corrected_frame.loc[selected_records.index, RAW_COLUMNS] = normalized_corrections[RAW_COLUMNS].to_numpy()
+            _, _, _, corrected_persisted = rebuild_persisted_records(corrected_frame, active_params)
+            save_records_frame(corrected_persisted, create_backup=True, path=active_data_file)
+            st.session_state[receipt_key] = f"已保存 {selected_entry_day} 的修改，原数据已备份。" if chinese_entry else f"Saved corrections for {selected_entry_day}; original records backed up."
+            st.session_state[f"{receipt_key}:toast"] = True
+            st.rerun()
+        except (OSError, ValueError, TypeError) as error:
+            st.error(str(error))
+if st.session_state.pop("daily_entry_reset_pending", False):
+    st.session_state["daily_sleep_time"] = ""
+    st.session_state["daily_wake_time"] = ""
+    st.session_state["daily_no_sleep"] = False
+    st.session_state["daily_momentum"] = 5
+    st.session_state["daily_disturbance"] = False
+    st.session_state["daily_medication"] = False
+    st.session_state["daily_long_sleep_confirm"] = False
+    st.session_state["daily_awake_minutes"] = 0
+    st.session_state["daily_awake_unknown"] = False
+receipt = st.session_state.get(receipt_key)
+if receipt:
+    st.success(receipt)
+    if st.session_state.pop(f"{receipt_key}:toast", False):
+        st.toast(receipt, icon="✅")
+with entry_slot:
+    st.subheader(_("today_log_title"))
+    st.caption(_("today_log_caption"))
+    chinese_entry = st.session_state.lang != "en"
+    today = st.date_input(_("form_date"), value=None, key="daily_entry_date")
+    no_sleep_entry = False
+    no_sleep_day = today
+    pending_key = f"no_sleep_confirmation:{selected_profile_id}"
+    if st.session_state.get(pending_key) != str(no_sleep_day):
+        st.session_state.pop(pending_key, None)
+    if st.button("这天没睡（通宵）" if chinese_entry else "No sleep on this date", disabled=is_sample_profile or no_sleep_day is None, key="no_sleep_begin"):
+        st.session_state[pending_key] = str(no_sleep_day)
+    if pending_key in st.session_state:
+        st.warning(f"确定将 {no_sleep_day} 提交为通宵吗？无需填写下方内容。" if chinese_entry else f"Confirm no sleep for {no_sleep_day}? No other fields required.")
+        confirm_column, cancel_column = st.columns(2)
+        if cancel_column.button("取消" if chinese_entry else "Cancel", key="no_sleep_cancel"):
+            st.session_state.pop(pending_key, None)
+            st.rerun()
+        if confirm_column.button("确定提交通宵" if chinese_entry else "Confirm and save no sleep", type="primary", disabled=is_sample_profile, key="no_sleep_confirm"):
+            current_records = load_records_frame(active_data_file)
+            same_day = current_records["date"].astype(str).eq(str(no_sleep_day))
+            if no_sleep_day > date.today() or same_day.any():
+                st.error("该日期已有记录或是未来日期，请先核对日历。" if chinese_entry else "This date already has a record or is in the future. Check the calendar.")
+            else:
+                no_sleep_record = pd.DataFrame([{"schema_version": CURRENT_SCHEMA_VERSION, "date": no_sleep_day, "sleep_time": "00:00", "wake_time": "00:00", "momentum": None, "disturbance": 1, "sleep_medication": False, "awake_minutes": 0, "awake_unknown": False}])
+                _, _, _, persisted = rebuild_persisted_records(pd.concat([current_records, no_sleep_record], ignore_index=True), active_params)
+                save_records_frame(persisted, create_backup=False, path=active_data_file)
+                st.session_state.pop(pending_key, None)
+                st.session_state[receipt_key] = f"已记录 {no_sleep_day} 通宵。" if chinese_entry else f"Saved no sleep for {no_sleep_day}."
+                st.rerun()
+    with st.form("daily_entry", enter_to_submit=False):
+        st.markdown("**记录睡眠 · 助眠药物在右侧一键勾选**" if chinese_entry else "**Log sleep · mark sleep-aid use on the right**")
+        col1, col2 = st.columns(2)
+        with col1:
+            sleep_time = st.text_input(
+                _("form_sleep_time"),
+                placeholder="HH:MM or 830",
+                help=_("form_time_help"),
+                key="daily_sleep_time",
+                disabled=no_sleep_entry,
+            )
+            wake_time = st.text_input(
+                _("form_wake_time"),
+                placeholder="HH:MM or 830",
+                help=_("form_time_help"),
+                key="daily_wake_time",
+                disabled=no_sleep_entry,
+            )
+        with col2:
+            momentum = st.slider(_("form_momentum"), 0, 10, 5, key="daily_momentum")
+            disturbance = st.checkbox("其他重大扰动（生病、旅行等）" if chinese_entry else "Other major disturbance (illness, travel, etc.)", value=False, key="daily_disturbance")
+            sleep_medication = st.checkbox(_("form_medication"), value=False, key="daily_medication", help=_("med_help"))
+        with st.expander("中途醒来（可选）" if chinese_entry else "Awake during sleep (optional)"):
+            awake_minutes_input = st.number_input("中途清醒合计分钟" if chinese_entry else "Total awake minutes", min_value=0, max_value=1440, step=5, key="daily_awake_minutes", disabled=no_sleep_entry)
+            awake_unknown_input = st.checkbox("中途醒过，但不记得清醒总时长" if chinese_entry else "I was awake but do not know the total duration", key="daily_awake_unknown", disabled=no_sleep_entry)
+            st.caption("填合计时长即可，不必逐次记录。" if chinese_entry else "Enter the total; individual awakening times are not required.")
+        confirm_long_sleep = st.checkbox("若睡眠超过 16 小时，确认时间填写正确" if chinese_entry else "If sleep exceeds 16 hours, confirm the times are correct", key="daily_long_sleep_confirm")
+        st.caption("Enter 确认并移到下一输入框；最后移到记录按钮。请明确点击按钮保存。" if chinese_entry else "Enter confirms and moves to the next field, then focuses the record button. Click the button to save.")
+        submitted = st.form_submit_button(
+            _("form_submit"),
+            disabled=is_sample_profile,
+            on_click=normalize_daily_entry_times,
+        )
 
-    st.markdown(f"**{_('empirical_model_status')}**")
-    persistence_metrics = validation_report["persistence"]
-    learned_metrics = validation_report["learned"]
-    metric_rows = []
-    for variable, metric_name in (("P", "P_circular_mae"), ("D", "D_mae"), ("H", "H_mae")):
-        persistence_error = persistence_metrics.get(metric_name)
-        learned_error = learned_metrics.get(metric_name)
-        metric_rows.append({
-            _("empirical_variable"): variable,
-            _("empirical_persistence"): f"{persistence_error:.3f}" if pd.notna(persistence_error) else "N/A",
-            _("empirical_learned"): f"{learned_error:.3f}" if pd.notna(learned_error) else "N/A",
-            _("empirical_beats"): _("empirical_beats_yes") if validation_report["learned_beats_persistence"][variable] else _("empirical_beats_no"),
+    if submitted:
+        if today is None:
+            st.error("请选择记录日期后保存。" if chinese_entry else "Choose a record date before saving.")
+            st.stop()
+        sleep_time = "00:00" if no_sleep_entry else normalize_clock_time(sleep_time)
+        wake_time = "00:00" if no_sleep_entry else normalize_clock_time(wake_time)
+        if sleep_time is None or wake_time is None:
+            st.error(_("err_time_entry"))
+            st.stop()
+        if today > date.today():
+            st.error("不能保存未来日期的实际睡眠记录。" if chinese_entry else "Actual sleep records cannot use a future date.")
+            st.stop()
+        session_start, session_end = dynamics.build_sleep_session(today, sleep_time, wake_time)
+        entered_hours = dynamics.calculate_sleep_duration_hours(session_start, session_end)
+        duration_minutes = int(round((session_end - session_start).total_seconds() / 60))
+        duration_hours, remaining_minutes = divmod(duration_minutes, 60)
+        duration_label = f"{duration_hours} 小时 {remaining_minutes} 分钟" if chinese_entry else f"{duration_hours} h {remaining_minutes} min"
+        if not no_sleep_entry and entered_hours == 0:
+            st.error("入睡与醒来时间相同。若确实没睡，请选择通宵入口。" if chinese_entry else "Identical times imply zero sleep. Use the no-sleep option if you did not sleep.")
+            st.stop()
+        if entered_hours > 16 and not confirm_long_sleep:
+            st.error("睡眠超过 16 小时，请检查时间，并勾选确认后再保存。" if chinese_entry else "Sleep exceeds 16 hours. Check the times and confirm before saving.")
+            st.stop()
+        current_records = load_records_frame(active_data_file)
+        if not no_sleep_entry:
+            try:
+                validate_sleep_windows(pd.DataFrame([{"date": today, "sleep_time": sleep_time, "wake_time": wake_time, "awake_minutes": awake_minutes_input, "awake_unknown": awake_unknown_input}]), allow_long=confirm_long_sleep)
+            except ValueError as error:
+                st.error(str(error))
+                st.stop()
+        duplicate_mask = (
+            current_records["date"].astype(str).eq(str(today))
+            & current_records["wake_time"].astype(str).eq(wake_time)
+            & current_records["sleep_time"].astype(str).eq(sleep_time)
+        ) if not current_records.empty else pd.Series(dtype=bool)
+        if bool(duplicate_mask.any()):
+            st.warning(_("err_duplicate_record"))
+            st.stop()
+        if not current_records.empty:
+            existing_sessions = dynamics.derive_session_frame(current_records, active_params["target_wake"])
+            if not no_sleep_entry:
+                overlaps = existing_sessions[
+                    (existing_sessions["sleep_hours"] > 0)
+                    & (existing_sessions["sleep_start_dt"] < session_end)
+                    & (existing_sessions["wake_end_dt"] > session_start)
+                ]
+                if not overlaps.empty:
+                    st.error("这段睡眠与已有记录重叠，请在数据管理中更正原记录。" if chinese_entry else "This sleep overlaps an existing record. Correct the original in data management.")
+                    st.stop()
+            elif bool(((existing_sessions["date"] == today) & (existing_sessions["sleep_hours"] > 0)).any()):
+                st.error("该日期已有睡眠记录，请先核对，避免矛盾的通宵声明。" if chinese_entry else "This date already has sleep records. Check them before declaring no main sleep.")
+                st.stop()
+        new_record = pd.DataFrame([{
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "date": today,
+            "wake_time": wake_time,
+            "sleep_time": sleep_time,
+            "momentum": momentum,
+            "disturbance": int(disturbance or no_sleep_entry),
+            "sleep_medication": bool(sleep_medication),
+            "awake_minutes": 0 if no_sleep_entry else awake_minutes_input,
+            "awake_unknown": False if no_sleep_entry else awake_unknown_input,
+            "P": None,
+            "D": None,
+            "H": None,
+            "in_attractor": None,
+        }])
+        current_records = pd.concat([current_records, new_record], ignore_index=True)
+        summary, derived, updated_daily_summary, persisted = rebuild_persisted_records(current_records, active_params)
+        save_records_frame(persisted, create_backup=False, path=active_data_file)
+        if not no_sleep_entry:
+            net_minutes = duration_minutes - awake_minutes_input
+            net_hours, net_remainder = divmod(net_minutes, 60)
+            duration_label = f"{net_hours} 小时 {net_remainder} 分钟" if chinese_entry else f"{net_hours} h {net_remainder} min"
+            if awake_unknown_input:
+                duration_label += "（窗口上界，实际睡眠未知）" if chinese_entry else " (window upper bound; actual sleep unknown)"
+        st.session_state[receipt_key] = (
+            f"已保存 {today} 的通宵记录：主睡眠 0 小时，后续补觉可另行记录。" if no_sleep_entry and chinese_entry
+            else f"Saved no-main-sleep record for {today}: 0 hours." if no_sleep_entry
+            else f"已保存 {today} 的睡眠记录：{sleep_time} → {wake_time}，共 {duration_label}。" if chinese_entry
+            else f"Saved sleep record for {today}: {sleep_time} → {wake_time}, {duration_label}."
+        )
+        st.session_state[f"{receipt_key}:toast"] = True
+        st.session_state["daily_entry_reset_pending"] = True
+        p_str = f"{summary['P']:.2f}" if pd.notna(summary.get("P")) else "N/A"
+        st.write(_(
+            "submit_state",
+            day=summary["rhythm_day"],
+            p=p_str,
+            d=summary["D"],
+            h=summary["H"],
+            sleep=summary["sleep_hours"],
+            sessions=summary["session_count"],
+        ))
+        st.rerun()
+
+with entry_slot:
+    render_medication_journal(selected_profile_id, st.session_state.get("daily_entry_date"), is_sample_profile, chinese_entry)
+
+with st.expander("补录多段睡眠" if chinese_entry else "Add several sleep intervals"):
+    st.subheader("多段睡眠批量补录" if chinese_entry else "Record several sleep intervals")
+    st.caption("日期默认使用日历选中日，并表示每段醒来的日期；跨夜记录请核对日期。中途短暂醒来请用单段入口的清醒合计。" if chinese_entry else "Dates default to the selected calendar day and mean the wake date. Check overnight dates. Use awake totals for interruptions within one sleep.")
+    batch_generation = st.session_state.get("sleep_batch_generation", 0)
+    batch_context = f"{selected_profile_id}:{selected_entry_day}:{batch_generation}"
+    batch_text = st.text_area("粘贴多段时间（可选）" if chinese_entry else "Paste intervals (optional)", placeholder="01:00-04:00; 05:00-09:00; 14:00-15:00", key=f"sleep_batch_paste:{batch_context}")
+    try:
+        batch_defaults = parse_sleep_intervals(batch_text, selected_entry_day)
+        if batch_defaults.empty:
+            batch_defaults = pd.DataFrame([{"date": selected_entry_day, "sleep_time": "", "wake_time": "", "awake_minutes": 0, "awake_unknown": False}])
+        batch_defaults["date"] = pd.to_datetime(batch_defaults["date"]).dt.date
+        batch_rows = st.data_editor(
+            batch_defaults, num_rows="dynamic", hide_index=True,
+            key=f"sleep_batch_editor:{batch_context}:{hash(batch_text)}",
+            disabled=is_sample_profile,
+            column_config={
+                "date": st.column_config.DateColumn(_("form_date"), required=True),
+                "sleep_time": st.column_config.TextColumn(_("form_sleep_time")),
+                "wake_time": st.column_config.TextColumn(_("form_wake_time")),
+                "awake_minutes": st.column_config.NumberColumn("清醒分钟" if chinese_entry else "Awake minutes", min_value=0, step=5),
+                "awake_unknown": st.column_config.CheckboxColumn("清醒时长未知" if chinese_entry else "Awake time unknown"),
+            },
+        )
+        batch_allow_long = st.checkbox("确认超过 16 小时的窗口" if chinese_entry else "Confirm windows exceeding 16 hours", key=f"sleep_batch_long:{batch_context}")
+        batch_facts = batch_rows.copy()
+        active_rows = batch_facts["sleep_time"].fillna("").astype(str).str.strip().ne("") | batch_facts["wake_time"].fillna("").astype(str).str.strip().ne("")
+        batch_facts = batch_facts.loc[active_rows].copy()
+        batch_facts["date"] = batch_facts["date"].fillna(selected_entry_day)
+        batch_facts["momentum"] = 5
+        batch_facts["disturbance"] = 0
+        batch_facts["sleep_medication"] = False
+        preview_valid = False
+        if not batch_facts.empty:
+            try:
+                batch_facts = normalize_raw_records(batch_facts)
+                windows = validate_sleep_windows(batch_facts, records_frame, batch_allow_long)
+                preview_rows = []
+                for row, (start, end) in zip(batch_facts.to_dict("records"), windows):
+                    minutes = int((end - start).total_seconds() / 60 - row["awake_minutes"])
+                    preview_rows.append({"date": row["date"], "interval": f'{start:%m-%d %H:%M} → {end:%m-%d %H:%M}', "sleep": f'{minutes // 60} h {minutes % 60} min', "certainty": "upper bound" if row["awake_unknown"] else "estimated sleep"})
+                st.dataframe(pd.DataFrame(preview_rows), hide_index=True)
+                total_minutes = sum(int((end - start).total_seconds() / 60 - row["awake_minutes"]) for row, (start, end) in zip(batch_facts.to_dict("records"), windows))
+                st.caption(f"合计 {total_minutes // 60} 小时 {total_minutes % 60} 分钟" if chinese_entry else f"Total {total_minutes // 60} h {total_minutes % 60} min")
+                timeline = go.Figure()
+                for index, (row, (start, end)) in enumerate(zip(batch_facts.to_dict("records"), windows)):
+                    timeline.add_trace(go.Scatter(x=[start, end], y=[index + 1, index + 1], mode="lines+markers", line={"width": 12}, name=f"{index + 1}", hovertemplate="%{x|%m-%d %H:%M}<extra></extra>"))
+                timeline.update_layout(height=180 + 25 * len(windows), showlegend=False, xaxis={"title": "睡眠窗口" if chinese_entry else "Sleep windows", "type": "date"}, yaxis={"dtick": 1}, margin={"t": 15, "b": 35})
+                st.plotly_chart(timeline, config={"displayModeBar": False})
+                preview_valid = True
+            except (TypeError, ValueError) as error:
+                st.warning(str(error))
+        if st.button("一次保存全部睡眠段" if chinese_entry else "Save all intervals", disabled=is_sample_profile or not preview_valid):
+            current_batch_records = load_records_frame(active_data_file)
+            validate_sleep_windows(batch_facts, current_batch_records, batch_allow_long)
+            combined_records = pd.concat([current_batch_records, batch_facts], ignore_index=True)
+            _, _, _, batch_persisted = rebuild_persisted_records(combined_records, active_params)
+            save_records_frame(batch_persisted, create_backup=False, path=active_data_file)
+            st.session_state[receipt_key] = f"已保存 {len(batch_facts)} 段睡眠，合计 {total_minutes // 60} 小时 {total_minutes % 60} 分钟。" if chinese_entry else f"Saved {len(batch_facts)} intervals: {total_minutes // 60} h {total_minutes % 60} min."
+            if bool(batch_facts["awake_unknown"].any()):
+                st.session_state[receipt_key] += " 含未知清醒时长，合计为上界。" if chinese_entry else " Includes unknown awake time; total is an upper bound."
+            st.session_state[f"{receipt_key}:toast"] = True
+            st.session_state["sleep_batch_generation"] = batch_generation + 1
+            st.rerun()
+    except (OSError, TypeError, ValueError) as error:
+        st.error(str(error))
+if not daily_summary.empty and bool(observer.get("state_estimated", False)):
+    st.info("记录中有未知清醒时长：该窗口睡眠量为上界，债务轨迹仅为估计；更正后会重新计算。" if chinese_entry else "History includes unknown awake time: that window is an upper bound and the debt trajectory is estimated. Correct the record to recalculate.")
+st.html("""
+<script>
+if (!window.mrdmEntryKeyboardInstalled) {
+  window.mrdmEntryKeyboardInstalled = true;
+  document.addEventListener('keydown', function(event) {
+    if (event.key !== 'Enter' || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return;
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    const form = target.closest('[data-testid="stForm"]');
+    if (!form || !form.querySelector('input[aria-label="Sleep Start (O2)"], input[aria-label="睡眠开始时间 (O2)"]')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const fields = Array.from(form.querySelectorAll('[data-testid="stTextInput"] input')).filter(input => !input.disabled);
+    const index = fields.indexOf(target);
+    const next = index >= 0 ? fields[index + 1] : fields[0];
+    if (next) { next.focus(); next.select(); }
+    else { const button = form.querySelector('[data-testid="stFormSubmitButton"] button'); if (button) button.focus(); }
+  }, true);
+}
+</script>
+""", unsafe_allow_javascript=True)
+primary_candidate = recommendation_candidates[0]
+primary_action_name = localized_action_name(primary_candidate["action_type"])
+primary_time = primary_candidate.get("recommended_time") or "N/A"
+primary_duration = primary_candidate.get("recommended_duration_minutes")
+st.markdown(f"**{_('today_action_title')}**")
+st.success(f"### {primary_action_name}")
+today_action_col1, today_action_col2 = st.columns(2)
+today_action_col1.metric(_("today_action_when"), primary_time)
+today_action_col2.metric(
+    _("today_action_duration"),
+    f"{primary_duration} min" if primary_duration not in (None, "") else "—",
+)
+st.caption(f"{_('today_action_reason')}: {_(primary_candidate['reason_key'])}")
+st.caption(_("today_alternatives_hint"))
+st.divider()
+st.header(_("analysis_title"))
+
+objective_ui.render_phase_objective(daily_points, active_params["sleep_need_hours"], st.session_state.lang != "en")
+with st.expander("辅助观察：睡眠压力与历史分布" if st.session_state.lang != "en" else "Supporting observations: pressure and history"):
+    pressure_ui.render_pressure_trajectory(daily_points, st.session_state.lang != "en")
+st.subheader(_("charts_title"))
+with st.expander("更多：长期作息模式" if chinese_entry else "More: longer-term patterns"):
+    render_routine_patterns(daily_points, st.session_state.lang != "en")
+with st.expander("可选：行动记录与 Jev 接口" if st.session_state.lang != "en" else "Optional: action journal and Jev"):
+    recommendation_labels = []
+    candidate_rows = []
+    for candidate in recommendation_candidates:
+        action_name = localized_action_name(candidate["action_type"])
+        recommended_time = candidate.get("recommended_time") or "N/A"
+        duration = candidate.get("recommended_duration_minutes")
+        duration_label = f"{duration} min" if duration not in (None, "") else "—"
+        recommendation_labels.append(f"{action_name} · {recommended_time}")
+        candidate_rows.append({
+            _("candidate_action"): action_name,
+            _("candidate_time"): recommended_time,
+            _("candidate_duration"): duration_label,
+            _("candidate_basis"): _("candidate_rule_basis"),
         })
-    st.dataframe(pd.DataFrame(metric_rows), width="stretch", hide_index=True)
-
-    st.markdown(f"**{_('empirical_forecast')}**")
-    forecast = empirical_report["current_forecast"]
-    if forecast["available"]:
-        forecast_col1, forecast_col2 = st.columns(2)
-        forecast_col1.metric(_("empirical_predicted_p"), f"{forecast['P_mean']:.2f} ± {forecast['P_std']:.2f} h")
-        forecast_col2.metric(_("empirical_predicted_d"), f"{forecast['D_mean']:.2f} ± {forecast['D_std']:.2f} h")
-        st.metric(_("empirical_predicted_h"), f"{forecast['H_mean']:.3f} ± {forecast['H_std']:.3f}")
-        if not daily_summary.empty:
-            latest_observed = daily_summary.iloc[-1]
-            latest_phase = f"{latest_observed['P']:.2f}" if pd.notna(latest_observed["P"]) else "N/A"
-            st.caption(_(
-                "empirical_current_state",
-                p=latest_phase,
-                d=f"{latest_observed['D']:.2f}",
-                h=f"{latest_observed['H']:.3f}",
-            ))
-        st.caption(_("empirical_forecast_caption"))
-    else:
-        st.info(_("empirical_forecast_unavailable", reason=forecast["reason"]))
-
-    st.markdown(f"**{_('empirical_stage')}**")
-    stage_key = f"empirical_stage_{empirical_report['system_stage']}"
-    st.warning(_(stage_key))
-    if not empirical_report["controller_eligible"]:
-        st.warning(_("empirical_action_warning"))
-    st.markdown(f"**{_('empirical_candidates')}**")
-    st.info(_("empirical_candidates_hidden"))
+    st.dataframe(pd.DataFrame(candidate_rows), width="stretch", hide_index=True)
 
     if not is_sample_profile:
         st.markdown("---")
         st.markdown(f"**{_('recommendation_title')}**")
         st.caption(_("recommendation_caption"))
-        recommendation_labels = [
-            f"{candidate['action_type']} · {candidate.get('recommended_time') or 'N/A'}"
-            for candidate in recommendation_candidates
-        ]
         selector_key = recommendation_selector_key(
             selected_profile_id,
             recommendation_state,
@@ -1987,9 +2257,78 @@ with st.expander(_("empirical_title"), expanded=False):
             active_params["target_wake"],
         )
         st.caption(_(selected_candidate["reason_key"]))
+        st.markdown(f"**{_('jev_shadow_title')}**")
+        st.caption(_("jev_shadow_caption"))
+        jev_payload = build_jev_payload(
+            recommendation_state,
+            recommendation_candidates,
+            [True] * len(recommendation_candidates),
+        )
+        with st.expander(_("jev_shared_title"), expanded=False):
+            st.caption(_("jev_shared_caption"))
+            st.markdown(f"**{_('jev_shared_state')}**")
+            st.json(jev_payload["state"]["state"])
+            st.markdown(f"**{_('jev_shared_candidates')}**")
+            st.dataframe(pd.DataFrame(jev_payload["state"]["candidates"]), width="stretch", hide_index=True)
+        jev_result_key = f"jev_shadow_result:{selector_key}"
+        if st.button(_("jev_shadow_run"), key=f"jev_shadow_run:{selector_key}"):
+            st.session_state[jev_result_key] = evaluate_jev(
+                recommendation_state,
+                recommendation_candidates,
+                [True] * len(recommendation_candidates),
+            )
+        jev_result = st.session_state.get(jev_result_key)
+        if jev_result:
+            if jev_result["status"] == "disabled":
+                st.info(_("jev_shadow_disabled"))
+            elif jev_result["status"] == "unavailable":
+                st.warning(_("jev_shadow_unavailable"))
+            elif jev_result["status"] == "invalid":
+                st.warning(_("jev_shadow_invalid"))
+            elif jev_result["selection"] is None:
+                st.info(_("jev_shadow_vetoed"))
+            else:
+                selected_jev_index = int(jev_result["selection"].split("_")[-1])
+                selected_jev_candidate = recommendation_labels[selected_jev_index]
+                if len(recommendation_candidates) == 1:
+                    st.success(_("jev_shadow_single", candidate=selected_jev_candidate))
+                    st.caption(_("jev_single_note"))
+                else:
+                    st.success(_("jev_shadow_preference", candidate=selected_jev_candidate))
+                st.caption(_("jev_shadow_meaning"))
+                assurance = min(jev_result["safety_noul"], jev_result["evidence_noul"])
+                assurance_key = "jev_level_high" if assurance >= 0.8 else "jev_level_medium" if assurance >= 0.6 else "jev_level_low"
+                st.metric(_("jev_assurance"), _(assurance_key))
+                if jev_result["evidence_noul"] < 0.7:
+                    st.warning(_("jev_low_evidence"))
+                with st.expander(_("jev_technical_title"), expanded=False):
+                    jev_col1, jev_col2, jev_col3 = st.columns(3)
+                    jev_col1.metric(
+                        _("jev_metric_confidence"),
+                        f"{jev_result['confidence']:.0%}",
+                        help=_("jev_help_confidence"),
+                    )
+                    jev_col2.metric(
+                        _("jev_metric_safety"),
+                        f"{jev_result['safety_noul']:.0%}",
+                        help=_("jev_help_safety"),
+                    )
+                    jev_col3.metric(
+                        _("jev_metric_evidence"),
+                        f"{jev_result['evidence_noul']:.0%}",
+                        help=_("jev_help_evidence"),
+                    )
         st.markdown(f"**{_('empirical_log_title')}**")
         st.caption(_("empirical_log_caption"))
         with st.form(f"executed_intervention_form:{context_key}"):
+            response_codes = ["completed", "partial", "accepted", "deferred", "not_completed", "declined", "not_seen"]
+            response_labels = {_(f"response_{value}"): value for value in response_codes}
+            response_label = st.selectbox(
+                _("empirical_response"),
+                list(response_labels),
+                key=f"{context_key}:response",
+            )
+            response_input = response_labels[response_label]
             action_type_input = st.text_input(_("empirical_action_type"), key=draft_keys["action_type"])
             action_day_input = st.date_input(_("empirical_action_day"), key=draft_keys["action_day"])
             actual_time_input = st.time_input(_("empirical_actual_time"), key=draft_keys["actual_time"])
@@ -2001,218 +2340,117 @@ with st.expander(_("empirical_title"), expanded=False):
             )
         if save_action:
             try:
+                normalized_duration = duration_input.strip()
+                recommended_duration = selected_candidate.get("recommended_duration_minutes")
+                duration_modified = normalized_duration != ("" if recommended_duration in (None, "") else str(int(recommended_duration)))
+                action_modified = action_type_input != selected_candidate["action_type"]
+                time_modified = actual_time_input.strftime("%H:%M") != selected_candidate["recommended_time"]
+                executed_response = response_input in {"completed", "partial"}
+                stored_response = "modified" if response_input == "completed" and (action_modified or time_modified or duration_modified) else response_input
+                planned_response = response_input in {"accepted", "deferred"}
                 append_intervention({
+                    "decision_id": decision_id_for_context(context_key),
+                    "response": stored_response,
                     "rhythm_day": action_day_input.strftime("%Y-%m-%d"),
                     "action_type": action_type_input,
                     "recommended_time": selected_candidate["recommended_time"],
-                    "planned_time": "",
-                    "actual_time": actual_time_input.strftime("%H:%M"),
-                    "duration_minutes": duration_input.strip(),
-                    "executed": True,
+                    "planned_time": actual_time_input.strftime("%H:%M") if planned_response else "",
+                    "actual_time": actual_time_input.strftime("%H:%M") if executed_response else "",
+                    "duration_minutes": duration_input.strip() if executed_response else "",
+                    "executed": executed_response,
                     "source": "user_report",
                     "notes": notes_input,
                 })
-                build_empirical_status_report.clear()
                 st.success(_("empirical_action_saved"))
             except (OSError, TypeError, ValueError) as error:
                 st.error(_("empirical_action_error", error=error))
 
 
-with st.expander(_("test_panel_title"), expanded=False):
-    st.caption(_("test_panel_caption"))
-    test_col1, test_col2 = st.columns(2)
-    with test_col1:
-        st.session_state.test_target_wake = st.time_input(_("test_target_wake"), value=st.session_state.test_target_wake)
-        st.session_state.test_sleep_need_hours = st.number_input(
-            _("test_sleep_need"),
-            min_value=0.0,
-            max_value=24.0,
-            value=float(st.session_state.test_sleep_need_hours),
-            step=0.1,
-        )
-        st.session_state.test_recovery_k = st.number_input(
-            _("test_recovery_k"),
-            min_value=0.0,
-            max_value=24.0,
-            value=float(st.session_state.test_recovery_k),
-            step=0.1,
-        )
-    with test_col2:
-        st.session_state.test_lambda_d = st.number_input(
-            _("test_lambda_d"),
-            min_value=0.0,
-            max_value=1.0,
-            value=float(st.session_state.test_lambda_d),
-            step=0.01,
-        )
-        st.session_state.test_alpha_up = st.number_input(
-            _("test_alpha_up"),
-            min_value=0.0,
-            max_value=1.0,
-            value=float(st.session_state.test_alpha_up),
-            step=0.01,
-        )
-        st.session_state.test_alpha_down = st.number_input(
-            _("test_alpha_down"),
-            min_value=0.0,
-            max_value=1.0,
-            value=float(st.session_state.test_alpha_down),
-            step=0.01,
-        )
-        st.session_state.test_recovery_saturation_tau = st.number_input(
-            _("test_recovery_saturation_tau"),
-            min_value=0.1,
-            max_value=12.0,
-            value=float(st.session_state.test_recovery_saturation_tau),
-            step=0.1,
-        )
-
-    if st.button(_("test_reset")):
-        st.session_state.test_target_wake = datetime.strptime(config["target_wake"], "%H:%M").time()
-        st.session_state.test_sleep_need_hours = float(config["sleep_need_hours"])
-        st.session_state.test_lambda_d = float(config["lambda_d"])
-        st.session_state.test_alpha_up = float(config["alpha_up"])
-        st.session_state.test_alpha_down = float(config["alpha_down"])
-        st.session_state.test_recovery_k = float(config["recovery_k"])
-        st.session_state.test_recovery_saturation_tau = float(config["recovery_saturation_tau"])
-        st.rerun()
-
-
 active_params = get_active_parameters()
 
-with st.form("daily_entry"):
-    today = st.date_input(_("form_date"), date.today())
-    col1, col2 = st.columns(2)
-    with col1:
-        sleep_time = st.text_input(_("form_sleep_time"), placeholder="HH:MM")
-        wake_time = st.text_input(_("form_wake_time"), placeholder="HH:MM")
-    with col2:
-        momentum = st.slider(_("form_momentum"), 0, 10, 5)
-        disturbance = st.checkbox(_("form_disturbance"), value=False)
-        sleep_medication = st.checkbox(_("form_medication"), value=False)
-    
-    submitted = st.form_submit_button(_("form_submit"), disabled=is_sample_profile)
+with st.expander("数据管理与导入导出" if st.session_state.lang != "en" else "Data management and import/export"):
+    st.subheader(_("data_mgmt_title"))
+    st.caption(_("data_mgmt_caption"))
 
-if submitted:
-    if not TIME_PATTERN.match(sleep_time) or not TIME_PATTERN.match(wake_time):
-        st.error("Time must be in HH:MM format")
-        st.stop()
+    if records_frame.empty:
+        st.info(_("info_no_data"))
+    else:
+        if daily_view is not None and daily_summary is not None and not daily_summary.empty:
+            state_by_day = daily_summary[["rhythm_day", "P", "D", "H", "in_attractor", "sleep_hours", "session_count"]]
+            raw_preview = daily_view.merge(state_by_day, on="rhythm_day", how="left", suffixes=("", "_day"))
+            st.dataframe(
+                raw_preview[[
+                    "date",
+                    "wake_time",
+                    "sleep_time",
+                    "momentum",
+                    "disturbance",
+                    "sleep_medication",
+                    "rhythm_day",
+                    "sleep_hours",
+                    "session_count",
+                    "P_day",
+                    "D_day",
+                    "H_day",
+                    "in_attractor_day",
+                ]],
+                width="stretch",
+                hide_index=True,
+            )
 
-    df = load_records_frame(active_data_file)
+        st.markdown("#### " + _("manual_mgmt"))
+        editor_df = records_frame.copy()
+        editor_df.insert(0, "_del", False)
+        editor_df["date"] = pd.to_datetime(editor_df["date"], errors="coerce").dt.date
+        editor_df["disturbance"] = editor_df["disturbance"].fillna(False).astype(bool)
+        editor_df["sleep_medication"] = editor_df["sleep_medication"].fillna(False).astype(bool)
 
-    new_record = pd.DataFrame([{
-        "schema_version": CURRENT_SCHEMA_VERSION,
-        "date": today,
-        "wake_time": wake_time,
-        "sleep_time": sleep_time,
-        "momentum": momentum,
-        "disturbance": int(disturbance),
-        "sleep_medication": bool(sleep_medication),
-        "P": None,
-        "D": None,
-        "H": None,
-        "in_attractor": None,
-    }])
-
-    df = pd.concat([df, new_record], ignore_index=True)
-
-    summary, derived, daily_summary, persisted = rebuild_persisted_records(df, active_params)
-    save_records_frame(persisted, create_backup=False, path=active_data_file)
-    
-    st.success(_("submit_success"))
-    p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
-    st.write(
-        _("submit_state",
-          day=summary['rhythm_day'],
-          p=p_str,
-          d=summary['D'],
-          h=summary['H'],
-          sleep=summary['sleep_hours'],
-          sessions=summary['session_count'])
-    )
-
-st.subheader(_("data_mgmt_title"))
-st.caption(_("data_mgmt_caption"))
-
-if records_frame.empty:
-    st.info(_("info_no_data"))
-else:
-    if daily_view is not None and daily_summary is not None and not daily_summary.empty:
-        state_by_day = daily_summary[["rhythm_day", "P", "D", "H", "in_attractor", "sleep_hours", "session_count"]]
-        raw_preview = daily_view.merge(state_by_day, on="rhythm_day", how="left", suffixes=("", "_day"))
-        st.dataframe(
-            raw_preview[[
-                "date",
-                "wake_time",
-                "sleep_time",
-                "momentum",
-                "disturbance",
-                "sleep_medication",
-                "rhythm_day",
-                "sleep_hours",
-                "session_count",
-                "P_day",
-                "D_day",
-                "H_day",
-                "in_attractor_day",
-            ]],
+        edited_df = st.data_editor(
+            editor_df,
             width="stretch",
             hide_index=True,
+            num_rows="fixed",
+            disabled=True if is_sample_profile else ["schema_version", "P", "D", "H", "in_attractor"],
+            column_config={
+                "_del": st.column_config.CheckboxColumn(_("del_col"), help=_("del_help")),
+                "date": st.column_config.DateColumn("date"),
+                "wake_time": st.column_config.TextColumn("wake_time"),
+                "sleep_time": st.column_config.TextColumn("sleep_time"),
+                "momentum": st.column_config.NumberColumn("momentum", min_value=0, max_value=10, step=1),
+                "disturbance": st.column_config.CheckboxColumn("disturbance", help=_("dist_help")),
+                "sleep_medication": st.column_config.CheckboxColumn("sleep_medication", help=_("med_help")),
+            },
         )
 
-    st.markdown("#### " + _("manual_mgmt"))
-    editor_df = records_frame.copy()
-    editor_df.insert(0, "_del", False)
-    editor_df["date"] = pd.to_datetime(editor_df["date"], errors="coerce").dt.date
-    editor_df["disturbance"] = editor_df["disturbance"].fillna(False).astype(bool)
-    editor_df["sleep_medication"] = editor_df["sleep_medication"].fillna(False).astype(bool)
-
-    edited_df = st.data_editor(
-        editor_df,
-        width="stretch",
-        hide_index=True,
-        num_rows="fixed",
-        disabled=True if is_sample_profile else ["schema_version", "P", "D", "H", "in_attractor"],
-        column_config={
-            "_del": st.column_config.CheckboxColumn(_("del_col"), help=_("del_help")),
-            "date": st.column_config.DateColumn("date"),
-            "wake_time": st.column_config.TextColumn("wake_time"),
-            "sleep_time": st.column_config.TextColumn("sleep_time"),
-            "momentum": st.column_config.NumberColumn("momentum", min_value=0, max_value=10, step=1),
-            "disturbance": st.column_config.CheckboxColumn("disturbance", help=_("dist_help")),
-            "sleep_medication": st.column_config.CheckboxColumn("sleep_medication", help=_("med_help")),
-        },
-    )
-
-    if st.button(_("save_button"), type="primary", disabled=is_sample_profile):
-        try:
-            cleaned_df = edited_df.loc[~edited_df["_del"].fillna(False)].copy()
-            cleaned_df = cleaned_df[["schema_version"] + RAW_COLUMNS]
-            summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df, active_params)
-            save_records_frame(persisted, create_backup=True, path=active_data_file)
-            p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
-            st.success(
-                _("save_ok",
-                  day=summary['rhythm_day'],
-                  p=p_str,
-                  d=summary['D'],
-                  h=summary['H'])
-            )
-            st.rerun()
-        except Exception as exc:
-            st.error(_("save_fail", exc=exc))
-
-with st.expander(_("import_title"), expanded=False):
-    st.caption(_("import_caption"))
-    uploaded_file = st.file_uploader(_("import_uploader"), type=["csv"], accept_multiple_files=False)
-    if uploaded_file is not None:
-        try:
-            imported_df = pd.read_csv(uploaded_file)
-            validated_import = validate_import_frame(imported_df)
-            if st.button(_("import_button"), type="primary", disabled=is_sample_profile):
-                _, _, _, persisted = rebuild_persisted_records(validated_import, active_params)
+        if st.button(_("save_button"), type="primary", disabled=is_sample_profile):
+            try:
+                cleaned_df = edited_df.loc[~edited_df["_del"].fillna(False)].copy()
+                cleaned_df = cleaned_df[["schema_version"] + RAW_COLUMNS]
+                summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df, active_params)
                 save_records_frame(persisted, create_backup=True, path=active_data_file)
-                st.success(_("import_success"))
+                p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
+                st.success(
+                    _("save_ok",
+                      day=summary['rhythm_day'],
+                      p=p_str,
+                      d=summary['D'],
+                      h=summary['H'])
+                )
                 st.rerun()
-        except Exception as exc:
-            st.error(_("import_fail", exc=exc))
+            except Exception as exc:
+                st.error(_("save_fail", exc=exc))
+
+    with st.expander(_("import_title"), expanded=False):
+        st.caption(_("import_caption"))
+        uploaded_file = st.file_uploader(_("import_uploader"), type=["csv"], accept_multiple_files=False)
+        if uploaded_file is not None:
+            try:
+                imported_df = pd.read_csv(uploaded_file)
+                validated_import = validate_import_frame(imported_df)
+                if st.button(_("import_button"), type="primary", disabled=is_sample_profile):
+                    _, _, _, persisted = rebuild_persisted_records(validated_import, active_params)
+                    save_records_frame(persisted, create_backup=True, path=active_data_file)
+                    st.success(_("import_success"))
+                    st.rerun()
+            except Exception as exc:
+                st.error(_("import_fail", exc=exc))

@@ -50,3 +50,11 @@ def test_deadband_generates_maintain_wake_candidate():
     result = candidate({"P": 0.2, "D": 1.0}, cbt_min=5.5)
     assert result["action_type"] == "maintain_wake"
     assert pd.notna(result["rhythm_day"])
+
+
+def test_estimated_phase_does_not_trigger_maintain_or_light():
+    for phase in (0.2, 2.0):
+        result = candidate({"P": phase, "D": None, "sleep_duration_known": False}, cbt_min=5.5)
+        assert result["action_type"] == "stabilize_wake"
+        assert result["reason_key"] == "recommendation_reason_data"
+    assert candidate({"P": 0.2, "D": None, "sleep_duration_known": True, "state_estimated": True})["action_type"] == "maintain_wake"

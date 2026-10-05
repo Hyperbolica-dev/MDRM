@@ -1,5 +1,6 @@
 import sys
-sys.path.append('/home/user/dev/projects/RCS')
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from model.dynamics import prc_shift, calculate_sleep_debt
 
 wake_target_hour = 8.5

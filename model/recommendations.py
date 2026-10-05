@@ -2,6 +2,8 @@ import math
 from datetime import datetime, timedelta
 
 import pandas as pd
+from model.time_input import normalize_clock_time
+from model.phase_observation import phase_observation_is_usable
 
 
 def _format_clock(value: float) -> str:
@@ -11,8 +13,10 @@ def _format_clock(value: float) -> str:
 
 
 def _normalize_clock(value: str) -> str:
-    parsed = datetime.strptime(value, "%H:%M")
-    return parsed.strftime("%H:%M")
+    normalized = normalize_clock_time(value)
+    if normalized is None:
+        raise ValueError("invalid clock time")
+    return normalized
 
 
 def _candidate(action_type, rhythm_day, recommended_time, duration_minutes, reason_key, notes):
@@ -45,7 +49,7 @@ def build_recommendation_candidates(
     rhythm_day = rhythm_day or datetime.now().date()
     p_value = current_state.get("P")
     d_value = current_state.get("D")
-    p_valid = p_value is not None and pd.notna(p_value) and math.isfinite(float(p_value))
+    p_valid = phase_observation_is_usable(current_state)
     d_valid = d_value is not None and pd.notna(d_value) and math.isfinite(float(d_value))
 
     if not p_valid:

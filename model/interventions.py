@@ -4,10 +4,13 @@ import re
 import tempfile
 
 import pandas as pd
+from model.time_input import normalize_clock_time
 
-INTERVENTION_SCHEMA_VERSION = 1
+INTERVENTION_SCHEMA_VERSION = 2
 INTERVENTION_COLUMNS = [
     "schema_version",
+    "decision_id",
+    "response",
     "rhythm_day",
     "action_type",
     "recommended_time",
@@ -19,7 +22,9 @@ INTERVENTION_COLUMNS = [
     "notes",
 ]
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
+DECISION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9:_-]{8,128}$")
+RESPONSES = {"generated", "accepted", "modified", "declined", "deferred", "completed", "partial", "not_completed", "not_seen"}
+EXECUTED_RESPONSES = {"completed", "modified", "partial"}
 
 
 def empty_intervention_frame() -> pd.DataFrame:
@@ -57,12 +62,10 @@ def _validate_date(value: str) -> str:
 def _validate_optional_time(value: str, field: str) -> str:
     if not value:
         return ""
-    if not TIME_PATTERN.fullmatch(value):
-        raise ValueError(f"{field} must use HH:MM")
-    parsed = pd.to_datetime(value, format="%H:%M", errors="coerce")
-    if pd.isna(parsed) or parsed.strftime("%H:%M") != value:
+    normalized = normalize_clock_time(value)
+    if normalized is None:
         raise ValueError(f"{field} is not a valid clock time")
-    return value
+    return normalized
 
 
 def normalize_intervention_record(record: dict) -> dict:
@@ -76,6 +79,12 @@ def normalize_intervention_record(record: dict) -> dict:
         raise ValueError("schema_version must be an integer") from exc
     if version != INTERVENTION_SCHEMA_VERSION:
         raise ValueError(f"unsupported intervention schema_version: {version}")
+    decision_id = _optional_text(normalized["decision_id"])
+    response = _optional_text(normalized["response"])
+    if DECISION_ID_PATTERN.fullmatch(decision_id) is None:
+        raise ValueError("decision_id is invalid")
+    if response not in RESPONSES:
+        raise ValueError("response is invalid")
     rhythm_day = _validate_date(_optional_text(normalized["rhythm_day"]))
     action_type = _optional_text(normalized["action_type"])
     source = _optional_text(normalized["source"])
@@ -87,6 +96,8 @@ def normalize_intervention_record(record: dict) -> dict:
     planned_time = _validate_optional_time(_optional_text(normalized["planned_time"]), "planned_time")
     actual_time = _validate_optional_time(_optional_text(normalized["actual_time"]), "actual_time")
     executed = _parse_executed(normalized["executed"])
+    if executed != (response in EXECUTED_RESPONSES):
+        raise ValueError("executed must agree with response")
     duration_value = normalized["duration_minutes"]
     if duration_value is None or _optional_text(duration_value) == "":
         duration_minutes = pd.NA
@@ -103,6 +114,8 @@ def normalize_intervention_record(record: dict) -> dict:
         raise ValueError("non-executed records cannot contain actual execution fields")
     return {
         "schema_version": version,
+        "decision_id": decision_id,
+        "response": response,
         "rhythm_day": rhythm_day,
         "action_type": action_type,
         "recommended_time": recommended_time,
@@ -118,6 +131,13 @@ def normalize_intervention_record(record: dict) -> dict:
 def validate_intervention_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty and not set(frame.columns):
         return empty_intervention_frame()
+    legacy_columns = [column for column in INTERVENTION_COLUMNS if column not in {"decision_id", "response"}]
+    if "decision_id" not in frame.columns and set(legacy_columns).issubset(frame.columns):
+        frame = frame.copy()
+        frame["decision_id"] = [f"legacy:{index:08d}" for index in range(len(frame))]
+        frame["response"] = ["completed" if _parse_executed(value) else "generated" for value in frame["executed"]]
+        frame["schema_version"] = INTERVENTION_SCHEMA_VERSION
+        frame = frame[INTERVENTION_COLUMNS]
     missing = [column for column in INTERVENTION_COLUMNS if column not in frame.columns]
     if missing:
         raise ValueError(f"missing intervention columns: {', '.join(missing)}")
