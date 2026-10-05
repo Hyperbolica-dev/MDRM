@@ -2,6 +2,56 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
+## [1.3.0] — 2026-10-05
+
+- Consolidated the accumulated schema-v2, sleep-pressure and phase-objective work into one release; intermediate document versions were not tagged releases.
+- Made calendar and logging share the first screen, added outside-click/Escape deselection, suppressed rerun fading, and made no-sleep entry an independent two-click confirmation.
+- Added an optional local alias library and medication journal without expanding mandatory input.
+- Explained the phase portrait blue trajectory, target and next-step interpretation; removed legacy diagnostics, P/D controls, test bench and GP shadow learning while preserving Jev.
+- Added event-context and fixed-gain circular observer research with private outputs kept outside Git.
+- Documented single-owner private-network access and a static blog entry without publishing private service addresses.
+
+## Earlier untagged development stages
+
+### v1.2 core phase objective (schema v2 unchanged)
+
+- Replaced the retired variance/debt objective with jointly weighted circular target-error and daily-drift losses.
+- Added the primary error–drift return map, objective contours and a circular view with a zero-drift ring; retained P–S as supporting context.
+- Kept sleep adequacy separate from the schedule objective and documented the transition from observable return states to future constrained phase control.
+
+
+### Phase observation and logging reliability
+
+- Unified phase validity across the calendar, overview, default charts and rule recommendations; unknown-duration phase no longer establishes alignment, while pressure ranges remain available.
+- Natural-date calendar colors aggregate all contributing rhythm-day states deterministically, with a neutral mixed-state legend.
+
+- Long-window and circular views now use the selected calendar window; recent trajectories are explicitly limited to seven days.
+- Recurring-state counts distinguish fully contained scenario ranges from possible coverage, excluding estimated phase from unknown sleep duration.
+- Added target-distance and adjacent-day summaries with circular differences and interval-aware pressure comparisons; chart hover includes the pressure timestamp.
+- Fixed cleared-date submission and overlapping corrected sleep windows while retaining automatic backups and visible submission controls.
+
+
+### Sleep recording schema v2 (v1.0)
+
+- Added total awake minutes and explicit unknown awake duration to sleep windows; known awake time is subtracted without inventing separate sleep episodes.
+- Added same-day multi-row batch entry, paste parsing, interval previews and a timeline. Batch writes reject overlaps and duplicates before an atomic save.
+- Legacy v1 records migrate compatibly with a backup before schema upgrade. Unknown awake duration is an upper bound, marks subsequent state estimates, and prevents formal attractor certification or empirical training from that trajectory.
+
+### Added
+
+- Human-friendly time normalization for full-width, compact, meridiem, and Chinese time forms across daily entry, imports, edits, dynamics, and intervention records.
+- Facility survey documenting the time-entry and chart-gap handling decisions.
+
+### Fixed
+
+- Core Trend Charts now connect line traces across missing values.
+
+### Changed
+
+- Redefined H as asymmetric habit-strength adaptation to target-independent routine stability instead of a hard P-threshold gate.
+- Added the non-persisted `routine_stability` shadow metric based on consecutive representative wake-time consistency.
+- Added routine stability to the core trend chart and habit-observation card.
+
 ## [v0.5.4] - 2026-09-10
 
 ### Added
@@ -133,3 +183,30 @@ All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
 - Established the current MRDM console workflow around a Python/Streamlit prototype and the MRDM rhythm model.
 - Introduced the first rhythm-day aware state computation for the current implementation.
+## [Unreleased]
+
+### Added
+
+- TypeSafe Jev as the typed, observe-only decision component in shadow controller evaluations.
+- Explicit Jev shadow-review UI with local fallback and no automatic external calls.
+- Privacy-minimized state/candidate bucketing, strict response validation, fixed endpoint, timeout, and environment-only API key handling.
+- Practical product audit covering the daily workflow, backup reliability, atomic persistence, empty-state presentation, and decision-to-outcome linkage.
+- Evidence-based MRDM product-system research covering information architecture, minimum inputs, user controls, action library, feedback cadence, and success metrics.
+- Product principles defining action-first presentation, candidate visibility, typed uncertainty, local safety authority, low-burden input, and gradual system retreat.
+
+### Fixed
+
+- Shadow action simulation now uses planned recommendation time and duration instead of empty execution fields.
+- Candidate actions remain visible regardless of empirical system-identification eligibility.
+- Jev output now defaults to qualitative human-readable assurance, explains single-candidate limitations, and moves raw probabilities into technical details.
+- Daily backup detection now checks the current calendar date instead of treating any historical backup as today's backup.
+- Sleep-record writes now use atomic replacement and preserve the previous file when serialization fails.
+- Empty personal profiles now display unknown state instead of ideal P=0, D=0, H=1 values.
+- The daily workflow now begins with a Today section containing last-sleep entry, a plain-language direction summary, and one human-readable primary action before research diagnostics.
+- Existing records in the Today entry date picker now receive pale colors for attractor state, phase delay, phase advance, aligned-phase debt, and undefined phase.
+- Sleep submission now retains a date-specific receipt across reruns and provides an explicit no-main-sleep entry. Enter in entry inputs advances focus without submitting. Future dates, overlaps, implicit zero-duration sleep, duplicate entries, and unconfirmed sleep over 16 hours are blocked.
+- Daily summaries label reported sleep, reported zero sleep, and missing-day inference separately while retaining the existing missing-day debt estimate.
+- Jev now maps missing, non-numeric, and non-finite state values to an explicit unknown bucket instead of failing shadow review.
+- Exact duplicate sleep submissions are rejected without appending another source record.
+- Intervention schema v2 adds stable decision identity and typed response outcomes while loading legacy v1 data compatibly.
+- Recommendation feedback now distinguishes accepted plans, completion, partial completion, deferral, refusal, non-completion, and suggestions not seen in time; non-execution states never carry an actual dose.

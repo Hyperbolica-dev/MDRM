@@ -1,67 +1,49 @@
 # MRDM Roadmap
 
-## Version Convention
+更新：2026-10-05。唯一待审入口：[滚动审计报告](docs/dev/practical_product_audit.md)。
 
-| Level | Trigger | Example |
-|---|---|---|
-| Major | `records.csv` schema incompatible | v0.4 → v1.0 |
-| Minor | Theory model update | v0.4 → v0.5 |
-| Patch | Programmatic feature / tooling update | v0.5.0 → v0.5.1 |
+## 当前交付：v1.3.0（发布整理中）
 
----
+目标：minimum input friction；先找到输入，再读懂今天与相轨迹。v1.0–v1.2 是未打标的工作阶段，不伪造历史发布；版本允许跳号，准确提交与标签时间以 Git 为准。
 
-## Current: v0.5.x stabilization
+| 顺序 | 工作 | 完成标准 | 状态 |
+|---|---|---|---|
+| 1 | 整理 roadmap、隐私与发布边界 | 单一待审 outline；私人数据不进入提交 | 已完成 |
+| 2 | 简化录入 | 常驻主入口；药物标记明显；通宵两次点击独立提交；日历可取消选择 | 已实现 |
+| 3 | 降低视觉负担 | 避免重载淡化；删除 P/D 阈值实验、旧影子模型界面、旧曲线；保留 Jev 接口 | 已实现并验证 |
+| 4 | 相图解释 | 说明蓝线、目标与下一步；不把轨迹连接线当预测或生理因果 | 已实现并验证 |
+| 5 | 测试台整理 | 仅用户目标/偏好可调；推导状态自动计算；无依据的内部常数不伪装个性化估计 | 已实现并验证 |
+| 6 | 分批提交与版本 | 必要测试、审查 staged diff、隐私确认、历史标签核对、v1.3.0 标签 | 收尾中 |
+| 7 | 博客使用入口 | 核实站点与服务承载方式、认证及数据边界；判断可推送范围 | 收尾中 |
 
-- Persistent target UTC-offset setting and dashboard biological UTC estimate based on the latest seven valid phase observations.
-- Provisional live-state display for assumed awake time, missed sleep window, and projected debt without record mutation.
+## 已完成的研究与实现（发布状态待整理）
 
-### v0.5.1 — Light Therapy Guidance UI
+- schema v2：清醒时间可选记录、人性化时间解析、备份与原子写入。
+- Process S 条件场景替代默认累计睡眠债解释，保留旧字段兼容。
+- 相图联合表达目标偏移与逐日漂移；主窗口与全天圆周中心为研究候选。
+- 已有时间顺序漂移预测、事件分层、固定增益因果圆周观察器比较；无药效因果结论。
+- 药物勾选明确为助眠药物扰动；已实现可选本地名称库与追加 journal，不自动联网。
 
-Dashboard passively displays:
-- $\widehat{CBT}_{\min}$ estimate (based on MSM + 1.5h)
-- Today's light window recommendation $[T_{light} \pm 0.5$h]
+## 后续研究
 
-No new recording fields. No UI checkboxes. Closed-loop feedback via next-day $P$ trajectory.
+1. 观察器在真实调整/事件窗口中的滞后与误差分布；按未来原始观测评分。
+2. 可解释的条件参考轨迹；只有验证有效后才进入默认相图，不以平滑自证改善。
+3. 可选本地药物详情；不增加日常必填，不自动把私人名称和日志发送给百科或模型。
 
-### v0.5.2 — Polar Coordinate Phase Chart
+## 发布历史
 
-- New `draw_polar_phase_chart()` function
-- Toggle switch between Cartesian and polar views
-- Polar: angle = $P$, radius = $D$
-- Preserves tooltip, opacity decay, attractor zone coloring
+- v0.3-nightly.1、v0.3-nightly.2、v0.4、v0.5.3、v0.5.4：已有 Git 标签，保留名称、原始时间及版本内容；邮箱脱敏会改变 Git 对象哈希。
+- v0.5.4：2026-09-10 已有发布记录。
+- v0.6、v1.1、v1.2：既有文档中的工作阶段；不等同于已经存在的发布标签。
+- v1.3.0：本轮整合目标，完成后以真实提交打标，不回填虚构历史时间。
 
-### v0.5.3 — Profiles and Actionable Guidance
+## 资料
 
-- Profile selector with personal records and four read-only sample profiles.
-- Actionable non-light intervention guidance when `|P| > 6h`.
-- Prominent P/D rhythm observation conclusions.
-- Cartesian and polar trajectory range controls with large-history rendering fallback.
+[相目标](docs/dev/phase_objective_system.md) · [映射研究](docs/dev/phase_mapping_study.md) · [事件研究](docs/dev/phase_event_study.md) · [药物日志](docs/dev/local_medication_journal.md)
 
-### v0.5.4 — Observability and Recovery Plan
+## 本轮验证与部署边界
 
-#### Scope
-
-- Mark `disturbance=1` observations distinctly in Cartesian and polar trajectories.
-- Calculate and annotate recovery duration from disturbance to attractor re-entry.
-- Encode habit strength $H$ with marker border width or border color while preserving time-based point size.
-- Add descriptive habit-observation cards for wake-time consistency, lock streak, disturbance count, and H trend.
-- Add UI behavior coverage for profile switching, guidance states, perturbation markers, and recovery boundaries.
-
-#### Acceptance Criteria
-
-- No `records.csv` schema change.
-- No new state equation or control input is introduced.
-- Missing or insufficient recovery data produces an explicit unavailable state, never an inferred duration.
-- Existing time, attractor-status, and P/D encodings remain distinguishable.
-- All existing dynamics tests and new UI behavior tests pass.
-
----
-
-## Future Research Directions
-
-- **Control cost in objective function**: Add $-\delta \sum |U_t|$ to penalize over-reliance on forced wake or medication (weight $\delta$ needs empirical calibration)
-- **Pharmacological modeling**: Extend medication layer beyond sleep-aid 0/1; dose-response curves
-- **Multi-subject expansion**: Parameter variation across subjects; group-level attractor statistics
-- **Density-based attractor estimation**: Replace rectangular attractor heuristic with KDE from $>60$ days data
-- **H to phase space**: Encode habit strength $H$ as point size or border width on phase chart
-- **Perturbation markers**: Distinct markers for $DIS=1$ points on trajectory; recovery time $R$ annotations
+- MRDM 完整测试集 185 项通过；旧影子模型专属测试随该功能退役。
+- 博客入口为独立提交；不携带原有未提交博客文章、主题或评论改动。
+- 本机 Tailscale 私人 HTTPS Serve 已配置并通过健康检查；实际主机地址仅在本地记录，不公开到 Git。
+- 远端历史需邮箱脱敏后按明确分支/标签列表发布，不能用 `push --mirror`。

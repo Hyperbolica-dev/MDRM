@@ -1,101 +1,51 @@
-# MRDM Console v0.5
+# MRDM Console v1.3.0
 
-MRDM (Minimal Rhythm Dynamics Model) is a minimal, long-running rhythm control system for a single subject (N=1). The repository contains a Python/Streamlit prototype supporting low-cost daily logging, rhythm tracking, attractor-state diagnosis, and closed-loop light therapy guidance (v0.5).
+A local-first, single-person sleep and rhythm journal. Record sleep with minimal input, see today's observations, and understand movement toward your chosen schedule. The core phase portrait jointly describes target offset and day-to-day drift; it does not claim to measure internal circadian phase or predict drug effects.
 
-MRDM is not about micro-level prediction accuracy. It focuses on stability over time: stable attractors, fast recovery after disturbance, and sustainable operation for months.
+## Daily use
 
-## What it tracks
+- Calendar and sleep entry share the first screen. Select a date; clicking outside or pressing Escape clears the highlight without discarding the draft.
+- Enter sleep and wake times. Mark sleep-aid disturbance with one checkbox. Optional awakenings and multiple-interval entry stay out of the main path.
+- For an unrecorded no-sleep day, click the no-sleep button and confirm once; no other fields are required.
+- Optional medication details use a local name/alias library and journal. Dose, clock time and notes can remain empty. No external lookup is performed.
+- The blue phase line connects actual observations from the latest seven days. It is not a forecast or recommended route. Target and movement are explained beside the figure.
+- Set only the desired wake time and sleep-duration reference in the sidebar. The app computes derived observations. Internal constants are references, not personalized estimates.
 
-- Sleep and wake timing
-- Sleep debt
-- Habit strength
-- Phase offset from the target rhythm
-- Recovery after disturbance
-- CBT_min estimation and light therapy window (v0.5.1)
-- Estimated biological UTC offset from the latest seven valid phase observations
-- Provisional live awake time and debt projection before the next sleep record
+Legacy P/D threshold controls, diagnostic curves, parameter test bench and GP shadow learning have been removed from the app. Jev remains an explicitly invoked optional decision interface over existing candidates. Details are previewed before an external request; medication journals are not included.
 
-## Core rule
+## Model and records
 
-Daily data is grouped using a fixed 18:00 rhythm-day boundary.
+Raw sleep records use schema v2 in `data/records.csv`. Version 1 loads compatibly and is backed up before upgrade. Awake duration can be known or explicitly unknown; unknown does not mean zero. Rhythm-day grouping uses the documented 18:00 boundary. Missing dates are not confirmed all-nighters; legacy inferred states must not be treated as measured phase.
 
-- Overnight sleep belongs to the wake date.
-- Same-day evening sleep belongs to the next rhythm day.
-- Multiple sleep sessions in one rhythm day are summed by duration.
-- `P` uses the representative main sleep wake time and total sleep across that rhythm day.
-- Missing rhythm days between the first and last records are inferred as all-nighters; days after the last record are not inferred.
-- A zero-sleep (all-nighter) rhythm day leaves `P` undefined, adds the full sleep need to the debt, and decays habit strength quickly.
+The production phase proxy still uses representative wake time and total daily sleep. Alternative main-window and circular-center mappings are research branches. Process S scenarios are supporting context, not a quantity to minimize permanently. Legacy D/H fields remain compatible with stored records, but are not presented as sleep owed or proven health scores.
 
-## Current behavior
+- [Model specification](docs/MRDM.md)
+- [Current roadmap](ROADMAP.md)
+- [Single rolling audit](docs/dev/practical_product_audit.md)
+- [Phase objective](docs/dev/phase_objective_system.md)
+- [Local medication design and implemented subset](docs/dev/local_medication_journal.md)
 
-The Streamlit console lets you:
+## Run locally
 
-- enter one daily record in under 10 seconds,
-- mark whether a sleep-aid medication was used,
-- open a test panel to temporarily override target wake time, sleep need, and dynamics parameters,
-- review and edit raw records,
-- delete mistakes and save a backup,
-- see derived `P`, `D`, `H`, and seven-day attractor status with persistent runtime thresholds,
-- read a live attractor-state diagnosis (steady lock / social jetlag / acute deprivation / phase advance / rhythm drift),
-- explore the P-D phase-space trajectory (Cartesian or polar) with temporal fading and attractor-zone highlighting,
-- see estimated CBT_min and today's light therapy window (v0.5.1).
-- set the target rhythm's UTC offset and see an estimated biological UTC offset.
-
-## Calculation notes
-
-- `P` is the phase offset of the mid-sleep time (MSM): `P = M_actual - M_target`, where `SleepDuration` is total rhythm-day sleep.
-- `D` sums all sleep sessions in the rhythm day, then applies a proportional decay rule.
-- `H` rises slowly near target phase and decays quickly when phase drifts away.
-
-The formal model is documented in [docs/MRDM.md](docs/MRDM.md). Theory specs live in `docs/theory/`.
-
-## Setup
-
-```bash
-conda env create -f environment.yaml
-conda activate mrdm
-```
-
-Or with mamba (recommended for faster dependency resolution):
-
-```bash
+```sh
 mamba env create -f environment.yaml
 mamba activate mrdm
-```
-
-## Run
-
-From the project root:
-
-```bash
 bash scripts/start_mrdm.sh
 ```
 
-The app auto-initializes an empty `data/records.csv` on first launch.
+The launcher binds localhost. Daily overrides persist in `data/ui_settings.yaml`; do not edit base configuration to change personal goals. Data, backups, medication SQLite files, exports and local research reports are ignored by Git.
 
-Edit `config.yaml` to set your target wake time and sleep need before starting.
+An optional TypeSafe key may be supplied through `TYPESAFE_API_KEY` or the ignored `.streamlit/typesafe_api_key` file. Never commit keys.
 
-## Files
+## Private remote entry
 
-| Path | Purpose |
-|---|---|
-| `README.md` | this overview |
-| `CHANGELOG.md` | maintenance log |
-| `ROADMAP.md` | version roadmap and future directions |
-| `docs/MRDM.md` | model specification |
-| `docs/theory/` | modular theory specs (sleep debt, MSM phase, PRC control, polar topology) |
-| `ui/streamlit_app.py` | Streamlit UI |
-| `model/dynamics.py` | state calculations |
-| `reference/` | literature reference cards |
-| `scripts/simulate_control.py` | PRC control simulation |
-| `scripts/start_mrdm.sh` | launcher script |
-| `config.yaml` | user configuration |
+The companion blog has a `/tools/mrdm/` entry for an owner-operated HTTPS Tailscale service. GitHub Pages does not run the Python app. The private service address stays in the accessing browser, not in public source. The computer must remain awake and connected. See [private remote access](docs/dev/private_remote_access.md). Multi-user registration and data isolation are not implemented.
 
-## Deferred work
+## Development
 
-- Control cost penalties
-- Pharmacological modeling beyond sleep-aid 0/1
-- Density-based attractor estimation (replace rectangular heuristic)
-- Multi-subject expansion
+```sh
+PYTHONPATH=. pytest
+PYTHONPATH=. python scripts/study_phase_events.py
+```
 
-See `ROADMAP.md` for the full plan.
+Research outputs are local and must not be committed. Historical tags retain their release dates; intermediate untagged work is consolidated in v1.3.0. See [CHANGELOG](CHANGELOG.md).
