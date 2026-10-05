@@ -25,7 +25,7 @@ D_t = \max\left(0, \lambda D_{t-1} + \Delta D_{recovery}\right)
 $$
 
 Parameters:
-- $k = 0.4$ — single long sleep recovers max $40\%$ of current debt; $D=12 \to 7.2$, needs ~3 nights to drop below 1
+- $k = 0.4$ — the recovery term is bounded by $40\%$ of current modeled debt; with decay, the saturated multiplier approaches $\lambda-k=0.5$. This is not an individual recovery-time prediction
 - $\tau = 2.0$ — saturation rate: oversleep 2h reaches ~$63\%$ of $k \cdot D_{t-1}$
 
 ## Research Basis
@@ -33,8 +33,8 @@ Parameters:
 | Reference | Key Insight | Impact |
 |---|---|---|
 | Van Dongen et al. (2003) | Chronic restriction deficits equal total deprivation | Proportional over absolute recovery |
-| Banks & Dinges (2010) | 1–2 recovery nights insufficient | Multi-night decay with $k=0.4$ |
+| Banks & Dinges (2010) | 1–2 recovery nights insufficient | Multi-night modeling; does not identify $k=0.4$ |
 | Yamazaki et al. (2021) | Single recovery sleep insufficient | Fractional per-night decay |
-| Ochab et al. (2021) | Recovery follows exponential decay | Directly motivates proportional formula |
+| Ochab et al. (2021) | Recovery varies across measured outcomes | Does not establish this equation or its parameters |
 
 See `reference/banks2010.md`, `reference/ochab2021.md`, `reference/vandongen2003.md`, `reference/yamazaki2021.md`.

@@ -1,3 +1,5 @@
+> 历史 P–D 设计文档。v1.1 默认界面已改为 P–S；下文 D 分区与干预解释不适用于新图。当前读图规范见 [相图可解释性](../dev/phase_space_interpretability.md)。
+
 # Polar Phase Space Topology and Attractor Zone Partitioning
 
 Version: v0.5

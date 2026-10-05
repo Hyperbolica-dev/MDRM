@@ -25,7 +25,7 @@ $$
 
 $P_t$ is folded to $[-12, 12)$ hour range modulo 24.
 
-When $SleepDuration = 0$ (all-nighter), $P_t$ is undefined (marked `None`), excluded from $H$ phase constraint; full $SleepNeed$ enters $D_t$ without recovery decay; $H_t$ decays rapidly.
+When $SleepDuration = 0$ (all-nighter), $P_t$ is undefined (marked `None`); full $SleepNeed$ enters $D_t$ without recovery decay, the routine-stability shadow metric is set to zero, and $H_t$ decays rapidly. H is no longer gated directly by the phase threshold; it is driven by repeated representative wake times.
 
 Unit: hour.
 

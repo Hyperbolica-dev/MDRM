@@ -1,3 +1,5 @@
+> Historical design, retired in v1.3.0. The former GP shadow controller, learning pipeline and analysis script have been removed. This document is reference history, not an active implementation or pending task. Jev remains an independent optional interface.
+
 # Empirical System Identification
 
 ## Current local observability audit
@@ -7,22 +9,24 @@
 | Category | Current fields | Status |
 |---|---|---|
 | Raw observations | `date`, `wake_time`, `sleep_time`, `momentum` | Directly recorded |
-| Derived state | `P`, `D`, `H`, `in_attractor` | Stored for review but recomputed from raw observations by `model/dynamics.py` |
+| Derived state | `P`, `D`, `H`, `routine_stability`, `in_attractor` | Recomputed from raw observations by `model/dynamics.py`; `routine_stability` is a shadow metric and is not persisted in `records.csv` |
 | Context | `disturbance`, `sleep_medication` | Directly recorded flags |
 | Recommendation | Transient light window calculated from estimated CBT minimum and current P | Displayed in Streamlit only; not persisted |
 | Executed intervention | None for light exposure | Not observable in the current history |
 
 A displayed recommendation does not establish that the user saw, planned, or executed it. A next-day state change cannot be used as implicit proof of adherence because natural dynamics, sleep timing, disturbances, medication, measurement error, and unrecorded context remain competing explanations.
 
+Intervention schema v2 assigns a stable `decision_id` to action feedback and records a typed `response`. Existing v1 rows migrate in memory to deterministic `legacy:*` identifiers with `generated` or `completed` response semantics. New feedback distinguishes accepted plans, completed or modified execution, partial execution, deferral, refusal, non-completion, and suggestions that were not seen in time. Only completed, modified, and partial responses count as execution evidence.
+
 `sleep_medication` is an observed context flag. It does not contain timing, dose, recommendation provenance, or a general action record, so it is not sufficient as the intervention layer.
 
-Dataset-specific counts are private local reports; historical light adherence is unknown without explicit execution records.
+Historical light adherence must remain unknown unless explicit execution records are available; dataset-specific counts belong in local reports.
 
 ## Data layers
 
 ### Mechanistic state derivation
 
-`model/dynamics.py` remains authoritative for deterministic P, D, H, daily target membership, and formal consecutive-day attractor status. P is derived from sleep timing and is not a direct physiological phase measurement.
+`model/dynamics.py` remains authoritative for deterministic P, D, H, the `routine_stability` shadow metric, daily target membership, and formal consecutive-day attractor status. P is derived from sleep timing and is not a direct physiological phase measurement. H is driven by routine stability rather than a hard P threshold.
 
 ### Empirical transition model
 
@@ -37,6 +41,8 @@ It does not replace mechanistic state derivation. Undefined P remains missing, a
 ### Shadow controller
 
 The controller may evaluate target-entry or target-retention probabilities only when the learned model is chronologically validated and the candidate action lies inside observed execution support. It must not infer causal effects from recommendation logs or unsupported observational contrasts.
+
+Jev is the typed fuzzy evaluator inside this shadow layer. It receives only locally admitted candidates and coarse state buckets, and its output remains observe-only. It cannot override scientific or safety gates, create interventions, or write execution records. The interface and privacy contract are specified in [jev_shadow_decision.md](jev_shadow_decision.md).
 
 ## Intervention persistence
 
@@ -77,4 +83,4 @@ Formal attractor lock remains a separate consecutive-day property. A one-step ta
 
 ## Local results
 
-Dataset-specific statistics are retained only in private local reports.
+Dataset-specific counts, errors, coverage and residual statistics are private local reports and are not published with the source. The former GP implementation is retired; current phase research uses the separate event/observer study.

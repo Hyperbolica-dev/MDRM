@@ -1,7 +1,9 @@
 # Ochab et al. (2021)
 
-MK Ochab, J Szwed, K Kordecki, et al. PLOS ONE.
+Jeremi K. Ochab, Jerzy Szwed, Katarzyna Oleś, et al. *Observing changes in human functioning during induced sleep deficiency and recovery periods*. PLOS ONE 16(9): e0255771.
 
-Key finding: Mathematical model of sleep debt dynamics shows that recovery follows an exponential decay pattern rather than linear absolute recovery. The rate of recovery depends on the current debt level.
+Source: https://doi.org/10.1371/journal.pone.0255771
 
-Relevance to MRDM: Directly motivates the proportional recovery formula D_t = lambda * D_{t-1} - k * D_{t-1} * (1 - exp(-excess/tau)).
+The study reports differing recovery responses across behavioral, motor and neurophysiological measures after sleep restriction. Recovery was incomplete for several measures. Its exponential fits concern distributions of activity-period durations; they do not establish MRDM's debt recovery equation.
+
+Relevance: supports treating recovery as a process with multiple outcomes. It does not identify MRDM's lambda, k or tau, validate an exponential trajectory for physiological sleep debt, or determine an individual's recovery time.
