@@ -2,6 +2,16 @@
 
 All notable changes to MRDM are recorded here in a maintenance-friendly format.
 
+## [1.3.1] — 2026-10-14
+
+- Sleep and no-sleep submissions calculate and save in the background; the isolated entry fragment avoids a full-page rerun. Completion uses a transient toast; calendar and analysis refresh on request.
+- Removed the multi-interval batch-entry interface; existing records and single-interval logging remain available.
+- Background writes reject concurrent changes, preserve data on failure, and prevent duplicate pending submissions.
+- Consolidated compact calendars, sleep-pressure explanations, deployment script downloads, conda/mamba startup, and generic iOS network-switching guidance.
+
+- Calendar outside-click dismissal no longer triggers reruns from sleep or medication form controls and save buttons; blank-click and Escape dismissal remain available.
+- Added executed JavaScript event regression and isolated sleep/medication persistence coverage after selecting a calendar day.
+
 ## [1.3.0] — 2026-10-05
 
 - Consolidated the accumulated schema-v2, sleep-pressure and phase-objective work into one release; intermediate document versions were not tagged releases.

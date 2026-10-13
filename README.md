@@ -1,4 +1,4 @@
-# MRDM Console v1.3.0
+# MRDM Console v1.3.1
 
 A local-first, single-person sleep and rhythm journal. Record sleep with minimal input, see today's observations, and understand movement toward your chosen schedule. The core phase portrait jointly describes target offset and day-to-day drift; it does not claim to measure internal circadian phase or predict drug effects.
 
@@ -21,6 +21,8 @@ The production phase proxy still uses representative wake time and total daily s
 
 - [Model specification](docs/MRDM.md)
 - [Current roadmap](ROADMAP.md)
+- [iOS 快捷指令网络切换](docs/ios_shortcuts_network_switching.md)
+- 控制台顶部提供部署／更新脚本下载入口；脚本源码见 [`scripts/install_mrdm.sh`](scripts/install_mrdm.sh)。
 - [Single rolling audit](docs/dev/practical_product_audit.md)
 - [Phase objective](docs/dev/phase_objective_system.md)
 - [Local medication design and implemented subset](docs/dev/local_medication_journal.md)
