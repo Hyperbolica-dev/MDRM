@@ -1,4 +1,7 @@
 import os
+import fcntl
+import hashlib
+from contextlib import contextmanager
 import shutil
 import tempfile
 from datetime import datetime
@@ -46,7 +49,34 @@ def ensure_daily_record_backup(data_file, backup_dir, now=None, retention_count=
     return create_record_backup(data_file, backup_dir, timestamp, retention_count)
 
 
-def atomic_write_csv(frame, path, **to_csv_kwargs):
+@contextmanager
+def record_write_lock(path):
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    with open(str(path) + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def record_revision(path):
+    try:
+        with open(path, "rb") as source:
+            return hashlib.sha256(source.read()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def atomic_write_csv(frame, path, expected_revision=Ellipsis, **to_csv_kwargs):
+    with record_write_lock(path):
+        if expected_revision is not Ellipsis and record_revision(path) != expected_revision:
+            raise ValueError("记录已改变，请刷新后重试 / Records changed; refresh and retry")
+        _atomic_write_csv(frame, path, **to_csv_kwargs)
+
+
+def _atomic_write_csv(frame, path, **to_csv_kwargs):
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary_path = tempfile.mkstemp(prefix=".records_", suffix=".csv", dir=directory)

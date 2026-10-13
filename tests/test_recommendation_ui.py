@@ -15,6 +15,12 @@ def launch(tmp_path, monkeypatch):
     return AppTest.from_file(str(APP_PATH)).run(timeout=30)
 
 
+def finish_sleep_save(app):
+    if "sleep_save_job" in app.session_state:
+        app.session_state["sleep_save_job"][0].result(timeout=15)
+        app.run(timeout=30)
+
+
 def widget(elements, label):
     return next(element for element in elements if element.label == label)
 
@@ -101,6 +107,7 @@ def test_rhythm_day_change_creates_a_new_execution_draft_context(tmp_path, monke
     widget(app.text_input, "Sleep Start (O2)").set_value("01:30")
     widget(app.text_input, "Wake Time (O1)").set_value("08:30")
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
     app.run(timeout=30)
 
     assert widget(app.time_input, "Actual time").value == time(8, 30)
@@ -112,14 +119,15 @@ def test_daily_entry_normalizes_fullwidth_and_compact_times(tmp_path, monkeypatc
     widget(app.text_input, "Sleep Start (O2)").set_value("０１：３０")
     widget(app.text_input, "Wake Time (O1)").set_value("830")
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
 
-    assert widget(app.text_input, "Sleep Start (O2)").value == ""
-    assert widget(app.text_input, "Wake Time (O1)").value == ""
+    assert widget(app.text_input, "Sleep Start (O2)").value == "01:30"
+    assert widget(app.text_input, "Wake Time (O1)").value == "08:30"
     saved = pd.read_csv(tmp_path / "data" / "records.csv")
     assert saved.iloc[0]["sleep_time"] == "01:30"
     assert saved.iloc[0]["wake_time"] == "08:30"
     assert not app.exception
-    assert any("Saved sleep record" in element.value for element in app.success)
+    assert any("Saved sleep record" in element.value for element in app.get("toast"))
     assert len(app.get("plotly_chart")) > 0
     weekday_table = next(element.value for element in app.dataframe if "Weekday" in element.value.columns)
     assert weekday_table["Recorded days"].sum() == 1
@@ -133,6 +141,7 @@ def test_daily_entry_without_date_shows_validation_and_does_not_write(tmp_path, 
     widget(app.text_input, "Sleep Start (O2)").set_value("01:00")
     widget(app.text_input, "Wake Time (O1)").set_value("08:00")
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
 
     assert not app.exception
     assert any("Choose a record date" in element.value for element in app.error)
@@ -191,13 +200,14 @@ def test_awake_entry_receipt_and_patterns_agree(tmp_path, monkeypatch, unknown, 
     widget(app.number_input, "Total awake minutes").set_value(awake_minutes)
     widget(app.checkbox, "I was awake but do not know the total duration").set_value(unknown)
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
 
     assert not app.exception
     saved = pd.read_csv(tmp_path / "data" / "records.csv")
     assert len(saved) == 1
     assert saved.iloc[0]["awake_minutes"] == awake_minutes
     assert bool(saved.iloc[0]["awake_unknown"]) == unknown
-    receipts = [element.value for element in app.success if "Saved sleep record" in element.value]
+    receipts = [element.value for element in app.get("toast") if "Saved sleep record" in element.value]
     assert len(receipts) == 1
     assert ("actual sleep unknown" in receipts[0]) == unknown
     if not unknown:
@@ -249,11 +259,13 @@ def test_exact_duplicate_sleep_record_is_not_appended(tmp_path, monkeypatch):
     widget(app.text_input, "Sleep Start (O2)").set_value("23:30")
     widget(app.text_input, "Wake Time (O1)").set_value("08:00")
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
     app.run(timeout=30)
 
     widget(app.text_input, "Sleep Start (O2)").set_value("23:30")
     widget(app.text_input, "Wake Time (O1)").set_value("08:00")
     app = widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
 
     saved = pd.read_csv(tmp_path / "data" / "records.csv")
     assert len(saved) == 1
@@ -290,13 +302,13 @@ def test_no_sleep_can_be_saved_without_times_and_receipt_survives_rerun(tmp_path
     widget(app.button, "No sleep on this date").click().run(timeout=30)
     assert pd.read_csv(tmp_path / "data" / "records.csv").empty
     widget(app.button, "Confirm and save no sleep").click().run(timeout=30)
-    app.run(timeout=30)
+    finish_sleep_save(app)
 
     saved = pd.read_csv(tmp_path / "data" / "records.csv")
     assert len(saved) == 1
     assert saved.iloc[0]["sleep_time"] == "00:00"
     assert saved.iloc[0]["wake_time"] == "00:00"
-    assert any("Saved no sleep for" in element.value for element in app.success)
+    assert any("Saved no sleep for" in element.value for element in app.get("toast"))
 
 
 def test_equal_times_require_explicit_no_sleep_choice(tmp_path, monkeypatch):
@@ -304,6 +316,7 @@ def test_equal_times_require_explicit_no_sleep_choice(tmp_path, monkeypatch):
     widget(app.text_input, "Sleep Start (O2)").set_value("08:30")
     widget(app.text_input, "Wake Time (O1)").set_value("08:30")
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
 
     assert pd.read_csv(tmp_path / "data" / "records.csv").empty
     assert any("Identical times" in element.value for element in app.error)
@@ -361,6 +374,7 @@ def test_unknown_sleep_phase_is_consistent_across_overview_and_calendar(tmp_path
     widget(app.text_input, "Wake Time (O1)").set_value("0830")
     widget(app.checkbox, "I was awake but do not know the total duration").check()
     widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
     assert not app.exception
     assert any("No usable sleep-midpoint offset" in element.value for element in app.info)
     assert any("Sleep duration is unknown" in element.value for element in app.caption)
@@ -403,6 +417,26 @@ def test_medication_journal_is_optional_and_sample_profile_isolated(tmp_path, mo
     assert not any(element.label == "Show local journal" for element in app.checkbox)
 
 
+def test_selected_calendar_day_saves_sleep_and_medication(tmp_path, monkeypatch):
+    from model.medication_journal import read_medication_journal
+
+    app = launch(tmp_path, monkeypatch)
+    day = date.today()
+    app.button(key=f"entry_day_personal_{day.isoformat()}").click().run(timeout=30)
+    app.text_input(key="daily_sleep_time").set_value("01:00")
+    app.text_input(key="daily_wake_time").set_value("08:00")
+    app.checkbox(key="daily_medication").check()
+    widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    finish_sleep_save(app)
+    assert not app.exception
+    saved = pd.read_csv(tmp_path / "data/records.csv")
+    assert len(saved) == 1 and saved.iloc[0].sleep_medication
+    widget(app.text_input, "New name or alias (first use)").set_value("Synthetic alias")
+    widget(app.button, "Save local medication entry").click().run(timeout=30)
+    assert not app.exception
+    assert len(read_medication_journal(tmp_path / "data/private/personal/medication.sqlite3")) == 1
+
+
 def test_schedule_preferences_persist_without_changing_config(tmp_path, monkeypatch):
     app = launch(tmp_path, monkeypatch)
     before = (APP_PATH.parents[1] / "config.yaml").read_bytes()
@@ -412,3 +446,35 @@ def test_schedule_preferences_persist_without_changing_config(tmp_path, monkeypa
     settings = yaml.safe_load((tmp_path / "data" / "ui_settings.yaml").read_text())
     assert settings["target_wake"] == "07:45"
     assert (APP_PATH.parents[1] / "config.yaml").read_bytes() == before
+
+
+def test_pending_sleep_save_keeps_other_controls_available_and_reports_failure(tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from ui import background_save
+
+    future = Future()
+    submissions = []
+
+    def submit(*args):
+        submissions.append(args)
+        return future
+
+    monkeypatch.setattr(background_save, "submit_sleep_save", submit)
+    app = launch(tmp_path, monkeypatch)
+    widget(app.text_input, "Sleep Start (O2)").set_value("01:00")
+    widget(app.text_input, "Wake Time (O1)").set_value("08:00")
+    widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    assert len(submissions) == 1
+    assert not future.done()
+    assert not app.exception
+    assert not any("Add several sleep" in item.label for item in app.expander)
+    widget(app.button, "Record & Calculate State").click().run(timeout=30)
+    assert len(submissions) == 1
+    widget(app.text_input, "New name or alias (first use)").set_value("Synthetic alias")
+    widget(app.button, "Save local medication entry").click().run(timeout=30)
+    assert not app.exception
+    future.set_exception(OSError("Save failed; retry"))
+    app.run(timeout=30)
+    assert any("Save failed; retry" in item.value for item in app.error)
+    assert widget(app.text_input, "Sleep Start (O2)").value == "01:00"
+    assert pd.read_csv(tmp_path / "data/records.csv").empty

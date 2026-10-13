@@ -21,7 +21,8 @@ sleep_pressure = importlib.reload(sleep_pressure)
 from model.interventions import append_intervention, empty_intervention_frame, load_interventions
 from model.jev_decision import build_jev_payload, evaluate_jev
 from ui.medication_journal import render_medication_journal
-from model.record_storage import atomic_write_csv, create_record_backup, ensure_daily_record_backup
+from ui.background_save import submit_sleep_save
+from model.record_storage import record_revision, atomic_write_csv, create_record_backup, ensure_daily_record_backup
 from ui import phase_space
 phase_space = importlib.reload(phase_space)
 from ui.phase_space import DEFAULT_POLAR_VIEW, daily_target_mask, filter_phase_space_points, latest_plottable_is_current, build_phase_line_frame, phase_step_is_contiguous
@@ -46,7 +47,7 @@ from ui import phase_objective as objective_ui
 objective_ui = importlib.reload(objective_ui)
 from model.recommendations import build_recommendation_candidates
 from model.time_input import is_clock_time, normalize_clock_time
-from model.sleep_entry import parse_sleep_intervals, validate_sleep_windows
+from model.sleep_entry import validate_sleep_windows
 dynamics = importlib.reload(dynamics)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.yaml')
@@ -827,13 +828,13 @@ def validate_import_frame(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
-def write_records_frame(df: pd.DataFrame, path: str = DATA_FILE):
+def write_records_frame(df: pd.DataFrame, path: str = DATA_FILE, expected_revision=Ellipsis):
     output = ensure_schema_version_column(df.copy())
     for column in PREFERRED_COLUMNS:
         if column not in output.columns:
             output[column] = pd.NA
     output = output[PREFERRED_COLUMNS]
-    atomic_write_csv(output, path, index=False)
+    atomic_write_csv(output, path, expected_revision=expected_revision, index=False)
 
 
 def load_records_frame(path: str = DATA_FILE):
@@ -981,14 +982,14 @@ def rebuild_persisted_records(raw_df: pd.DataFrame, params: dict):
     return summary, derived, daily_summary, persisted
 
 
-def save_records_frame(df: pd.DataFrame, create_backup: bool = False, path: str = DATA_FILE):
+def save_records_frame(df: pd.DataFrame, create_backup: bool = False, path: str = DATA_FILE, expected_revision=Ellipsis):
     if os.path.exists(path):
         stored_versions = pd.read_csv(path, usecols=lambda name: name == "schema_version")
         create_backup = create_backup or (not stored_versions.empty and bool((pd.to_numeric(stored_versions.get("schema_version"), errors="coerce") != CURRENT_SCHEMA_VERSION).any()))
     if create_backup and os.path.exists(path):
         create_record_backup(path, BACKUP_DIR, retention_count=BACKUP_RETENTION_COUNT)
 
-    write_records_frame(df, path)
+    write_records_frame(df, path, expected_revision=expected_revision)
 
 
 def get_daily_state_frames(records_frame: pd.DataFrame, params: dict):
@@ -1727,6 +1728,23 @@ if "language_preference_loaded" not in st.session_state:
 st.title(_("title"))
 st.write(_("subtitle"))
 st.caption(_("caption_naps"))
+blog_link, setup_link = st.columns(2)
+with blog_link:
+    st.link_button(
+        "返回博客" if st.session_state.lang != "en" else "Back to blog",
+        "https://hyperbolica-dev.github.io/",
+        width="stretch",
+    )
+with setup_link:
+    with st.expander("部署 / 更新 MDRM" if st.session_state.lang != "en" else "Deploy / update MDRM"):
+        setup_command = "curl -fsSL https://raw.githubusercontent.com/Hyperbolica-dev/MDRM/main/scripts/install_mrdm.sh -o install_mrdm.sh\n\nbash install_mrdm.sh"
+        setup_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "install_mrdm.sh")
+        with open(setup_script_path, "r", encoding="utf-8") as setup_script_file:
+            setup_script = setup_script_file.read()
+        st.caption("适用于已安装 Git 与 conda/mamba 的 Linux、macOS 或 WSL。先执行下载行并阅读脚本，再执行 bash 行。默认目录 ~/MDRM；可用 MRDM_DIR 和 MRDM_ENVIRONMENT 指定目录与环境。" if st.session_state.lang != "en" else "Requires Git and conda/mamba on Linux, macOS or WSL. Run the download line, review the file, then run bash. Defaults to ~/MDRM; override with MRDM_DIR and MRDM_ENVIRONMENT.")
+        st.caption("curl 获取的是已发布 main 分支的脚本；当前控制台版本可直接从下方下载。" if st.session_state.lang != "en" else "curl retrieves the published main version; download the current console's script below.")
+        st.code(setup_command, language="bash", wrap_lines=True)
+        st.download_button("直接下载脚本" if st.session_state.lang != "en" else "Download script", data=setup_script, file_name="install_mrdm.sh", mime="text/x-shellscript", width="stretch")
 
 
 def initialize_test_parameter_state():
@@ -1833,6 +1851,7 @@ active_params = get_active_parameters()
 active_params["attractor_p_limit"] = attractor_p_limit
 active_params["attractor_d_limit"] = attractor_d_limit
 active_params["target_utc_offset"] = target_utc_offset
+active_revision = record_revision(active_data_file)
 records_frame = load_records_frame(active_data_file)
 daily_view, daily_summary, daily_points = get_daily_state_frames(records_frame, active_params)
 
@@ -1897,6 +1916,7 @@ if not selected_records.empty:
     )
     if st.button("保存该日修改" if chinese_entry else "Save corrections for this date", disabled=is_sample_profile):
         try:
+            correction_revision = record_revision(active_data_file)
             current_records = load_records_frame(active_data_file)
             if not current_records.equals(records_frame):
                 raise ValueError("Records changed; refresh before editing.")
@@ -1913,28 +1933,28 @@ if not selected_records.empty:
             corrected_frame = current_records.copy()
             corrected_frame.loc[selected_records.index, RAW_COLUMNS] = normalized_corrections[RAW_COLUMNS].to_numpy()
             _, _, _, corrected_persisted = rebuild_persisted_records(corrected_frame, active_params)
-            save_records_frame(corrected_persisted, create_backup=True, path=active_data_file)
+            save_records_frame(corrected_persisted, create_backup=True, path=active_data_file, expected_revision=correction_revision)
             st.session_state[receipt_key] = f"已保存 {selected_entry_day} 的修改，原数据已备份。" if chinese_entry else f"Saved corrections for {selected_entry_day}; original records backed up."
             st.session_state[f"{receipt_key}:toast"] = True
             st.rerun()
         except (OSError, ValueError, TypeError) as error:
             st.error(str(error))
-if st.session_state.pop("daily_entry_reset_pending", False):
-    st.session_state["daily_sleep_time"] = ""
-    st.session_state["daily_wake_time"] = ""
-    st.session_state["daily_no_sleep"] = False
-    st.session_state["daily_momentum"] = 5
-    st.session_state["daily_disturbance"] = False
-    st.session_state["daily_medication"] = False
-    st.session_state["daily_long_sleep_confirm"] = False
-    st.session_state["daily_awake_minutes"] = 0
-    st.session_state["daily_awake_unknown"] = False
-receipt = st.session_state.get(receipt_key)
-if receipt:
-    st.success(receipt)
-    if st.session_state.pop(f"{receipt_key}:toast", False):
-        st.toast(receipt, icon="✅")
-with entry_slot:
+@st.fragment
+def render_sleep_entry():
+    if st.session_state.pop("daily_entry_reset_pending", False):
+        st.session_state["daily_sleep_time"] = ""
+        st.session_state["daily_wake_time"] = ""
+        st.session_state["daily_no_sleep"] = False
+        st.session_state["daily_momentum"] = 5
+        st.session_state["daily_disturbance"] = False
+        st.session_state["daily_medication"] = False
+        st.session_state["daily_long_sleep_confirm"] = False
+        st.session_state["daily_awake_minutes"] = 0
+        st.session_state["daily_awake_unknown"] = False
+    receipt = st.session_state.pop(receipt_key, None)
+    if receipt:
+        if st.session_state.pop(f"{receipt_key}:toast", False):
+            st.toast(receipt, icon="✅")
     st.subheader(_("today_log_title"))
     st.caption(_("today_log_caption"))
     chinese_entry = st.session_state.lang != "en"
@@ -1952,18 +1972,18 @@ with entry_slot:
         if cancel_column.button("取消" if chinese_entry else "Cancel", key="no_sleep_cancel"):
             st.session_state.pop(pending_key, None)
             st.rerun()
-        if confirm_column.button("确定提交通宵" if chinese_entry else "Confirm and save no sleep", type="primary", disabled=is_sample_profile, key="no_sleep_confirm"):
+        if confirm_column.button("确定提交通宵" if chinese_entry else "Confirm and save no sleep", type="primary", disabled=is_sample_profile, key="no_sleep_confirm") and st.session_state.get("sleep_save_job") is None:
+            revision = record_revision(active_data_file)
             current_records = load_records_frame(active_data_file)
             same_day = current_records["date"].astype(str).eq(str(no_sleep_day))
             if no_sleep_day > date.today() or same_day.any():
                 st.error("该日期已有记录或是未来日期，请先核对日历。" if chinese_entry else "This date already has a record or is in the future. Check the calendar.")
             else:
                 no_sleep_record = pd.DataFrame([{"schema_version": CURRENT_SCHEMA_VERSION, "date": no_sleep_day, "sleep_time": "00:00", "wake_time": "00:00", "momentum": None, "disturbance": 1, "sleep_medication": False, "awake_minutes": 0, "awake_unknown": False}])
-                _, _, _, persisted = rebuild_persisted_records(pd.concat([current_records, no_sleep_record], ignore_index=True), active_params)
-                save_records_frame(persisted, create_backup=False, path=active_data_file)
+                future = submit_sleep_save(pd.concat([current_records, no_sleep_record], ignore_index=True), active_params, os.path.abspath(active_data_file), revision, rebuild_persisted_records)
                 st.session_state.pop(pending_key, None)
-                st.session_state[receipt_key] = f"已记录 {no_sleep_day} 通宵。" if chinese_entry else f"Saved no sleep for {no_sleep_day}."
-                st.rerun()
+                message = f"已记录 {no_sleep_day} 通宵。" if chinese_entry else f"Saved no sleep for {no_sleep_day}."
+                st.session_state["sleep_save_job"] = (future, message, selected_profile_id)
     with st.form("daily_entry", enter_to_submit=False):
         st.markdown("**记录睡眠 · 助眠药物在右侧一键勾选**" if chinese_entry else "**Log sleep · mark sleep-aid use on the right**")
         col1, col2 = st.columns(2)
@@ -1998,18 +2018,18 @@ with entry_slot:
             on_click=normalize_daily_entry_times,
         )
 
-    if submitted:
+    if submitted and st.session_state.get("sleep_save_job") is None:
         if today is None:
             st.error("请选择记录日期后保存。" if chinese_entry else "Choose a record date before saving.")
-            st.stop()
+            return
         sleep_time = "00:00" if no_sleep_entry else normalize_clock_time(sleep_time)
         wake_time = "00:00" if no_sleep_entry else normalize_clock_time(wake_time)
         if sleep_time is None or wake_time is None:
             st.error(_("err_time_entry"))
-            st.stop()
+            return
         if today > date.today():
             st.error("不能保存未来日期的实际睡眠记录。" if chinese_entry else "Actual sleep records cannot use a future date.")
-            st.stop()
+            return
         session_start, session_end = dynamics.build_sleep_session(today, sleep_time, wake_time)
         entered_hours = dynamics.calculate_sleep_duration_hours(session_start, session_end)
         duration_minutes = int(round((session_end - session_start).total_seconds() / 60))
@@ -2017,17 +2037,18 @@ with entry_slot:
         duration_label = f"{duration_hours} 小时 {remaining_minutes} 分钟" if chinese_entry else f"{duration_hours} h {remaining_minutes} min"
         if not no_sleep_entry and entered_hours == 0:
             st.error("入睡与醒来时间相同。若确实没睡，请选择通宵入口。" if chinese_entry else "Identical times imply zero sleep. Use the no-sleep option if you did not sleep.")
-            st.stop()
+            return
         if entered_hours > 16 and not confirm_long_sleep:
             st.error("睡眠超过 16 小时，请检查时间，并勾选确认后再保存。" if chinese_entry else "Sleep exceeds 16 hours. Check the times and confirm before saving.")
-            st.stop()
+            return
+        revision = record_revision(active_data_file)
         current_records = load_records_frame(active_data_file)
         if not no_sleep_entry:
             try:
                 validate_sleep_windows(pd.DataFrame([{"date": today, "sleep_time": sleep_time, "wake_time": wake_time, "awake_minutes": awake_minutes_input, "awake_unknown": awake_unknown_input}]), allow_long=confirm_long_sleep)
             except ValueError as error:
                 st.error(str(error))
-                st.stop()
+                return
         duplicate_mask = (
             current_records["date"].astype(str).eq(str(today))
             & current_records["wake_time"].astype(str).eq(wake_time)
@@ -2035,7 +2056,7 @@ with entry_slot:
         ) if not current_records.empty else pd.Series(dtype=bool)
         if bool(duplicate_mask.any()):
             st.warning(_("err_duplicate_record"))
-            st.stop()
+            return
         if not current_records.empty:
             existing_sessions = dynamics.derive_session_frame(current_records, active_params["target_wake"])
             if not no_sleep_entry:
@@ -2046,10 +2067,10 @@ with entry_slot:
                 ]
                 if not overlaps.empty:
                     st.error("这段睡眠与已有记录重叠，请在数据管理中更正原记录。" if chinese_entry else "This sleep overlaps an existing record. Correct the original in data management.")
-                    st.stop()
+                    return
             elif bool(((existing_sessions["date"] == today) & (existing_sessions["sleep_hours"] > 0)).any()):
                 st.error("该日期已有睡眠记录，请先核对，避免矛盾的通宵声明。" if chinese_entry else "This date already has sleep records. Check them before declaring no main sleep.")
-                st.stop()
+                return
         new_record = pd.DataFrame([{
             "schema_version": CURRENT_SCHEMA_VERSION,
             "date": today,
@@ -2066,102 +2087,54 @@ with entry_slot:
             "in_attractor": None,
         }])
         current_records = pd.concat([current_records, new_record], ignore_index=True)
-        summary, derived, updated_daily_summary, persisted = rebuild_persisted_records(current_records, active_params)
-        save_records_frame(persisted, create_backup=False, path=active_data_file)
+        future = submit_sleep_save(current_records, active_params, os.path.abspath(active_data_file), revision, rebuild_persisted_records)
         if not no_sleep_entry:
             net_minutes = duration_minutes - awake_minutes_input
             net_hours, net_remainder = divmod(net_minutes, 60)
             duration_label = f"{net_hours} 小时 {net_remainder} 分钟" if chinese_entry else f"{net_hours} h {net_remainder} min"
             if awake_unknown_input:
                 duration_label += "（窗口上界，实际睡眠未知）" if chinese_entry else " (window upper bound; actual sleep unknown)"
-        st.session_state[receipt_key] = (
+        receipt_message = (
             f"已保存 {today} 的通宵记录：主睡眠 0 小时，后续补觉可另行记录。" if no_sleep_entry and chinese_entry
             else f"Saved no-main-sleep record for {today}: 0 hours." if no_sleep_entry
             else f"已保存 {today} 的睡眠记录：{sleep_time} → {wake_time}，共 {duration_label}。" if chinese_entry
             else f"Saved sleep record for {today}: {sleep_time} → {wake_time}, {duration_label}."
         )
-        st.session_state[f"{receipt_key}:toast"] = True
-        st.session_state["daily_entry_reset_pending"] = True
-        p_str = f"{summary['P']:.2f}" if pd.notna(summary.get("P")) else "N/A"
-        st.write(_(
-            "submit_state",
-            day=summary["rhythm_day"],
-            p=p_str,
-            d=summary["D"],
-            h=summary["H"],
-            sleep=summary["sleep_hours"],
-            sessions=summary["session_count"],
-        ))
-        st.rerun()
+        st.session_state["sleep_save_job"] = (future, receipt_message, selected_profile_id)
+
+
+@st.fragment(run_every=1)
+def render_save_status():
+    job = st.session_state.get("sleep_save_job")
+    if job is not None:
+        future, message, profile = job
+        if not future.done():
+            st.caption("正在保存，可继续浏览或操作。" if chinese_entry else "Saving; you can keep browsing or using the page.")
+            return
+        st.session_state.pop("sleep_save_job", None)
+        try:
+            future.result()
+        except Exception as error:
+            st.session_state["sleep_save_error"] = str(error)
+        else:
+            st.session_state.pop("sleep_save_error", None)
+            st.session_state["sleep_results_pending"] = True
+            st.toast(message, icon="✅")
+    if st.session_state.get("sleep_save_error"):
+        st.error(st.session_state["sleep_save_error"])
+    if st.session_state.get("sleep_results_pending"):
+        if st.button("更新日历与分析" if chinese_entry else "Refresh calendar and analysis"):
+            st.session_state.pop("sleep_results_pending", None)
+            st.rerun()
+
+
+with entry_slot:
+    render_sleep_entry()
+    render_save_status()
 
 with entry_slot:
     render_medication_journal(selected_profile_id, st.session_state.get("daily_entry_date"), is_sample_profile, chinese_entry)
 
-with st.expander("补录多段睡眠" if chinese_entry else "Add several sleep intervals"):
-    st.subheader("多段睡眠批量补录" if chinese_entry else "Record several sleep intervals")
-    st.caption("日期默认使用日历选中日，并表示每段醒来的日期；跨夜记录请核对日期。中途短暂醒来请用单段入口的清醒合计。" if chinese_entry else "Dates default to the selected calendar day and mean the wake date. Check overnight dates. Use awake totals for interruptions within one sleep.")
-    batch_generation = st.session_state.get("sleep_batch_generation", 0)
-    batch_context = f"{selected_profile_id}:{selected_entry_day}:{batch_generation}"
-    batch_text = st.text_area("粘贴多段时间（可选）" if chinese_entry else "Paste intervals (optional)", placeholder="01:00-04:00; 05:00-09:00; 14:00-15:00", key=f"sleep_batch_paste:{batch_context}")
-    try:
-        batch_defaults = parse_sleep_intervals(batch_text, selected_entry_day)
-        if batch_defaults.empty:
-            batch_defaults = pd.DataFrame([{"date": selected_entry_day, "sleep_time": "", "wake_time": "", "awake_minutes": 0, "awake_unknown": False}])
-        batch_defaults["date"] = pd.to_datetime(batch_defaults["date"]).dt.date
-        batch_rows = st.data_editor(
-            batch_defaults, num_rows="dynamic", hide_index=True,
-            key=f"sleep_batch_editor:{batch_context}:{hash(batch_text)}",
-            disabled=is_sample_profile,
-            column_config={
-                "date": st.column_config.DateColumn(_("form_date"), required=True),
-                "sleep_time": st.column_config.TextColumn(_("form_sleep_time")),
-                "wake_time": st.column_config.TextColumn(_("form_wake_time")),
-                "awake_minutes": st.column_config.NumberColumn("清醒分钟" if chinese_entry else "Awake minutes", min_value=0, step=5),
-                "awake_unknown": st.column_config.CheckboxColumn("清醒时长未知" if chinese_entry else "Awake time unknown"),
-            },
-        )
-        batch_allow_long = st.checkbox("确认超过 16 小时的窗口" if chinese_entry else "Confirm windows exceeding 16 hours", key=f"sleep_batch_long:{batch_context}")
-        batch_facts = batch_rows.copy()
-        active_rows = batch_facts["sleep_time"].fillna("").astype(str).str.strip().ne("") | batch_facts["wake_time"].fillna("").astype(str).str.strip().ne("")
-        batch_facts = batch_facts.loc[active_rows].copy()
-        batch_facts["date"] = batch_facts["date"].fillna(selected_entry_day)
-        batch_facts["momentum"] = 5
-        batch_facts["disturbance"] = 0
-        batch_facts["sleep_medication"] = False
-        preview_valid = False
-        if not batch_facts.empty:
-            try:
-                batch_facts = normalize_raw_records(batch_facts)
-                windows = validate_sleep_windows(batch_facts, records_frame, batch_allow_long)
-                preview_rows = []
-                for row, (start, end) in zip(batch_facts.to_dict("records"), windows):
-                    minutes = int((end - start).total_seconds() / 60 - row["awake_minutes"])
-                    preview_rows.append({"date": row["date"], "interval": f'{start:%m-%d %H:%M} → {end:%m-%d %H:%M}', "sleep": f'{minutes // 60} h {minutes % 60} min', "certainty": "upper bound" if row["awake_unknown"] else "estimated sleep"})
-                st.dataframe(pd.DataFrame(preview_rows), hide_index=True)
-                total_minutes = sum(int((end - start).total_seconds() / 60 - row["awake_minutes"]) for row, (start, end) in zip(batch_facts.to_dict("records"), windows))
-                st.caption(f"合计 {total_minutes // 60} 小时 {total_minutes % 60} 分钟" if chinese_entry else f"Total {total_minutes // 60} h {total_minutes % 60} min")
-                timeline = go.Figure()
-                for index, (row, (start, end)) in enumerate(zip(batch_facts.to_dict("records"), windows)):
-                    timeline.add_trace(go.Scatter(x=[start, end], y=[index + 1, index + 1], mode="lines+markers", line={"width": 12}, name=f"{index + 1}", hovertemplate="%{x|%m-%d %H:%M}<extra></extra>"))
-                timeline.update_layout(height=180 + 25 * len(windows), showlegend=False, xaxis={"title": "睡眠窗口" if chinese_entry else "Sleep windows", "type": "date"}, yaxis={"dtick": 1}, margin={"t": 15, "b": 35})
-                st.plotly_chart(timeline, config={"displayModeBar": False})
-                preview_valid = True
-            except (TypeError, ValueError) as error:
-                st.warning(str(error))
-        if st.button("一次保存全部睡眠段" if chinese_entry else "Save all intervals", disabled=is_sample_profile or not preview_valid):
-            current_batch_records = load_records_frame(active_data_file)
-            validate_sleep_windows(batch_facts, current_batch_records, batch_allow_long)
-            combined_records = pd.concat([current_batch_records, batch_facts], ignore_index=True)
-            _, _, _, batch_persisted = rebuild_persisted_records(combined_records, active_params)
-            save_records_frame(batch_persisted, create_backup=False, path=active_data_file)
-            st.session_state[receipt_key] = f"已保存 {len(batch_facts)} 段睡眠，合计 {total_minutes // 60} 小时 {total_minutes % 60} 分钟。" if chinese_entry else f"Saved {len(batch_facts)} intervals: {total_minutes // 60} h {total_minutes % 60} min."
-            if bool(batch_facts["awake_unknown"].any()):
-                st.session_state[receipt_key] += " 含未知清醒时长，合计为上界。" if chinese_entry else " Includes unknown awake time; total is an upper bound."
-            st.session_state[f"{receipt_key}:toast"] = True
-            st.session_state["sleep_batch_generation"] = batch_generation + 1
-            st.rerun()
-    except (OSError, TypeError, ValueError) as error:
-        st.error(str(error))
 if not daily_summary.empty and bool(observer.get("state_estimated", False)):
     st.info("记录中有未知清醒时长：该窗口睡眠量为上界，债务轨迹仅为估计；更正后会重新计算。" if chinese_entry else "History includes unknown awake time: that window is an upper bound and the debt trajectory is estimated. Correct the record to recalculate.")
 st.html("""
@@ -2427,7 +2400,7 @@ with st.expander("数据管理与导入导出" if st.session_state.lang != "en" 
                 cleaned_df = edited_df.loc[~edited_df["_del"].fillna(False)].copy()
                 cleaned_df = cleaned_df[["schema_version"] + RAW_COLUMNS]
                 summary, derived, daily_summary, persisted = rebuild_persisted_records(cleaned_df, active_params)
-                save_records_frame(persisted, create_backup=True, path=active_data_file)
+                save_records_frame(persisted, create_backup=True, path=active_data_file, expected_revision=active_revision)
                 p_str = f"{summary['P']:.2f}" if pd.notna(summary.get('P')) else "N/A"
                 st.success(
                     _("save_ok",
@@ -2449,7 +2422,7 @@ with st.expander("数据管理与导入导出" if st.session_state.lang != "en" 
                 validated_import = validate_import_frame(imported_df)
                 if st.button(_("import_button"), type="primary", disabled=is_sample_profile):
                     _, _, _, persisted = rebuild_persisted_records(validated_import, active_params)
-                    save_records_frame(persisted, create_backup=True, path=active_data_file)
+                    save_records_frame(persisted, create_backup=True, path=active_data_file, expected_revision=active_revision)
                     st.success(_("import_success"))
                     st.rerun()
             except Exception as exc:
