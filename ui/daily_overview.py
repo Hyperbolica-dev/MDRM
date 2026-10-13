@@ -23,7 +23,16 @@ def render_daily_overview(daily_points, observer, chinese):
         st.info(f"睡眠中点比目标{direction} {abs(phase):.2f} 小时。" if chinese else f"Sleep midpoint is {abs(phase):.2f} hours {direction} than the target.")
     consistency = summarize_wake_consistency(daily_points)
     debt_column, wake_column = st.columns(2)
-    debt_column.metric("醒后睡眠压力模拟" if chinese else "Post-sleep pressure model", "—" if lower is None or pd.isna(lower) else f"{lower:.1f}–{upper:.1f} / 100")
+    pressure_help = (
+        "睡眠压力指随清醒积累、在睡眠中消退的睡眠驱动力。MRDM 根据你记录的睡醒时间模拟它，并未直接测量身体。\n\n"
+        "清醒时数值逐渐接近 100，睡眠时逐渐接近 0；例如从 50 开始，连续睡 8 小时后约为 7.4。这里显示最近一段记录结束时的结果，不是现在的困倦程度。\n\n"
+        "显示范围是因为起始状态或夜间清醒位置未知。它不是还需补睡的小时数，也不能判断精力或认知是否恢复。想了解算法，可展开下方“计算依据与文献”。"
+        if chinese else
+        "Sleep pressure is the drive for sleep that builds during wake and declines during sleep. MRDM models it from your sleep log; it does not measure your body.\n\n"
+        "Wake moves the scale toward 100; sleep moves it toward 0. Starting at 50, eight hours asleep gives about 7.4. This is the end of the latest recorded interval, not current sleepiness.\n\n"
+        "The range reflects unknown starting pressure or awakening timing. It is not hours owed or a measure of cognitive recovery. See Calculations and evidence below."
+    )
+    debt_column.metric("醒后睡眠压力模拟" if chinese else "Post-sleep pressure model", "—" if lower is None or pd.isna(lower) else f"{lower:.1f}–{upper:.1f} / 100", help=pressure_help)
     shift = consistency["median_shift_minutes"]
     wake_column.metric("相邻日起床波动中位数" if chinese else "Median day-to-day wake shift", "—" if shift is None else f"{shift:.0f} min")
     st.caption(f"截至最新记录的 7 个日历日内有 {consistency['pairs']} 对连续有效起床记录；至少 3 对才汇总，数值越小表示起床越一致。" if chinese else f"{consistency['pairs']} consecutive valid wake pairs in the latest 7-day window; at least 3 are needed. Smaller shifts mean more consistent wake times.")
@@ -42,6 +51,7 @@ def render_daily_overview(daily_points, observer, chinese):
         st.caption("W 为代表性起床时间，T 为该节律日总睡眠，W* 为目标起床，N 为目标睡眠需求。上方波动取有效相邻日 ΔW 的中位数；多段睡眠的 P 是模型代理。" if chinese else "W is representative wake time, T daily total sleep, W* target wake and N sleep need. Variability uses the median valid adjacent-day ΔW. P for split sleep is a model proxy.")
         st.latex(r"\rho_t=e^{-\Delta W_t/\tau_W},\quad H_t=\alpha H_{t-1}+(1-\alpha)\rho_t")
         st.latex(r"S_{wake}(u)=1-(1-S_0)e^{-u/18.2},\quad S_{sleep}(s)=S_0e^{-s/4.2}")
+        st.caption("S₀ 是上一段结束时的压力；u、s 分别是清醒、睡眠小时数。逐段计算后乘 100。18.2 与 4.2 小时控制变化速度，采用固定参考值；不是需要睡够的小时数。最初从 0–100 的未知范围开始，缺失日期后重新开始。" if chinese else "S₀ is pressure after the previous interval; u and s are hours awake and asleep. Propagate each interval, then multiply by 100. The fixed 18.2 h and 4.2 h constants control the rate, not required sleep duration. Start from the unknown 0–100 range and restart after missing dates.")
         st.caption("睡眠压力按已记录的睡醒时间传播；连续记录间假设没有遗漏睡眠，缺失日不推断通宵。参数为群体参考，未校准为个人生理测量。旧 D 累计记账已退出默认分析和建议。" if chinese else "Pressure propagates through recorded sleep/wake times, assuming no omitted sleep between consecutive recorded days. Missing days are not all-nighters. Population parameters are not individually calibrated. Legacy cumulative D is retired from default analysis and recommendations.")
         st.markdown("[Borbély et al., 2016 · Process S](https://doi.org/10.1111/jsr.12371) · [Banks et al., 2010 · Recovery](https://pubmed.ncbi.nlm.nih.gov/20815182/) · [Van Dongen et al., 2003 · Cognitive outcomes](https://pubmed.ncbi.nlm.nih.gov/12683469/)")
         st.markdown("[Phillips et al., 2017 · SRI](https://doi.org/10.1038/s41598-017-03171-4) · [Fischer et al., 2021 · Regularity metrics](https://doi.org/10.1093/sleep/zsab103) · [Ochab et al., 2021 · Recovery](https://doi.org/10.1371/journal.pone.0255771)")

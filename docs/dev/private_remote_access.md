@@ -19,6 +19,12 @@ tailscale serve status
 
 Enter the resulting HTTPS address once in the blog entry. Public source code must not contain the actual private hostname. A separate-window fallback is available if browser embedding policy blocks the frame. Local startup should bind loopback when reverse-proxied; this does not imply a restart of an existing running service.
 
+## Login and network switching
+
+If Tailscale login requires a proxy, keep the original login page open and obtain the verification code through another trusted device or network that has proxy access. Do not put personal account or network details in public documentation.
+
+For proxy-first use on iOS, see [manual Shortcuts switching](../ios_shortcuts_network_switching.md).
+
 ## Future multi-user service
 
 Before allowing multiple people, add application authentication, owner checks on every data operation, per-user storage, restricted exports and backup separation. A shared personal CSV plus a login screen is insufficient. No public registration or multi-user access is enabled by this release.

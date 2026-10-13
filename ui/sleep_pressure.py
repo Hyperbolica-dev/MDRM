@@ -180,6 +180,29 @@ def render_phase_summary(points, chinese):
 
 def render_pressure_trajectory(points, chinese):
     st.subheader("相位与睡眠压力" if chinese else "Phase and sleep pressure")
+    with st.expander("？睡眠压力是什么？怎么算？" if chinese else "? What is sleep pressure, and how is it calculated?"):
+        if chinese:
+            st.markdown(
+                "睡眠压力可以理解为**清醒越久越高、睡眠时逐步下降的一条模型刻度**。它不是欠睡小时数，不是困倦概率，也不是认知损伤分数；这里用它帮助观察睡醒时间是否能解释压力的变化。"
+            )
+            st.markdown(
+                "**计算方式**：每段清醒 `t` 小时，`S_after = 1 − (1 − S_before) × exp(−t / 18.2)`；每段睡眠 `t` 小时，`S_after = S_before × exp(−t / 4.2)`。最后把 `S` 从 0–1 乘 100，显示为 0–100。"
+            )
+            st.caption("18.2 和 4.2 是当前采用的群体参考时间常数，不是对你的身体做出的精确测量。")
+            st.markdown(
+                "第一段可用记录从 `[0, 1]` 的未知初值范围开始，所以会显示上下界；记录中断时重新开始，不把空白日当作通宵。睡眠时刻或睡眠量不完整时，程序传播的是情景范围。点是范围中点，竖线是范围，不是置信区间。"
+            )
+        else:
+            st.markdown(
+                "Sleep pressure is a **model scale that rises during wake and falls during sleep**. It is not hours of sleep owed, a sleepiness probability, or a cognitive-damage score; it helps inspect whether recorded sleep–wake timing explains pressure changes."
+            )
+            st.markdown(
+                "**Calculation**: during `t` hours awake, `S_after = 1 − (1 − S_before) × exp(−t / 18.2)`; during `t` hours asleep, `S_after = S_before × exp(−t / 4.2)`. The displayed 0–100 scale is `S × 100`."
+            )
+            st.caption("18.2 and 4.2 are population reference time constants, not precise measurements of your body.")
+            st.markdown(
+                "The first usable record starts from an unknown `[0, 1]` range, so bounds are shown; a gap restarts the range rather than being treated as an all-nighter. Incomplete timing or duration produces scenarios. Points are midpoints; vertical lines are scenario bounds, not confidence intervals."
+            )
     if points.empty:
         st.info("记录后显示；不把空白日期当作通宵。" if chinese else "Record sleep to see the trajectory; missing days are not all-nighters.")
         return
